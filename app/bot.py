@@ -142,16 +142,6 @@ class TwitchSubBot:
 
         asyncio.create_task(keepalive())
 
-        import socket
-        # Libera el puerto 8080 si otro proceso lo está usando
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.bind(("0.0.0.0", int(os.getenv("PORT", "8080"))))
-            s.close()
-        except OSError:
-            logging.warning("⚠️ Puerto 8080 ocupado, esperando 3s...")
-            await asyncio.sleep(3)
-
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
