@@ -83,7 +83,7 @@ class TwitchSubBot:
     # -------------------------------
     # ARRANQUE DE WEBHOOK Y BOT
     # -------------------------------
-        async def webhook_handler(self, request: web.Request):
+    async def webhook_handler(self, request: web.Request):
         """Webhook de Telegram"""
         try:
             data = await request.json()
