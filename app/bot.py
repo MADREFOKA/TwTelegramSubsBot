@@ -12,6 +12,7 @@ from .db import Database
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
+
 def catch_exceptions(func):
     """Evita que un error en un comando apague el bot"""
     @wraps(func)
@@ -81,10 +82,10 @@ class TwitchSubBot:
         logging.info(f"Ping ejecutado: {latency:.0f}ms")
 
     # -------------------------------
-    # ARRANQUE DE WEBHOOK Y BOT
+    # WEBHOOK DE TELEGRAM
     # -------------------------------
     async def webhook_handler(self, request: web.Request):
-        """Webhook de Telegram"""
+        """Procesa las actualizaciones entrantes del webhook de Telegram"""
         try:
             data = await request.json()
             logging.info(f"📩 Update recibido: {data}")
@@ -95,6 +96,9 @@ class TwitchSubBot:
             logging.error(f"❌ Error procesando webhook: {e}")
             return web.Response(text=f"Error: {e}", status=500)
 
+    # -------------------------------
+    # ARRANQUE DE BOT Y SERVIDOR WEB
+    # -------------------------------
     async def start(self):
         """Inicia el bot y el servidor web aiohttp"""
         logging.info("🚀 Iniciando TwitchSubBot...")
@@ -107,23 +111,7 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("test", self.cmd_test))
         app.add_handler(CommandHandler("ping", self.cmd_ping))
 
-        # ⚙️ Inicializamos primero el bot
-        await app.initialize()
-        await app.start()
-
-        # Configura webhook en Telegram
-        webhook_url = f"{self.base_url}/webhook"
-        try:
-            resp = requests.get(
-                f"https://api.telegram.org/bot{self.token}/setWebhook",
-                params={"url": webhook_url},
-                timeout=10
-            ).json()
-            logging.info(f"📡 Webhook configurado → {resp}")
-        except Exception as e:
-            logging.error(f"❌ Error configurando webhook: {e}")
-
-        # Crea servidor aiohttp
+        # ⚙️ Crea primero el servidor web (Render necesita detectar el puerto)
         web_app = web.Application()
         web_app["bot"] = app
 
@@ -154,12 +142,29 @@ class TwitchSubBot:
 
         web_app.middlewares.append(log_request_middleware(web_app, lambda r: web.Response(status=200)))
 
+        # Inicia el servidor aiohttp
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
         await site.start()
 
-        logging.info("✅ Servidor iniciado correctamente en Render (con doble ruta /webhook y logs debug)")
+        logging.info("✅ Servidor iniciado correctamente en Render (puerto detectado)")
 
-        # Mantiene el servicio vivo
+        # ⚙️ Ahora inicializa y arranca el bot de Telegram
+        await app.initialize()
+        await app.start()
+
+        # Configura webhook en Telegram
+        webhook_url = f"{self.base_url}/webhook"
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{self.token}/setWebhook",
+                params={"url": webhook_url},
+                timeout=10
+            ).json()
+            logging.info(f"📡 Webhook configurado → {resp}")
+        except Exception as e:
+            logging.error(f"❌ Error configurando webhook: {e}")
+
+        # Mantiene el servicio activo
         await asyncio.Event().wait()
