@@ -81,8 +81,8 @@ class TwitchSubBot:
         await msg.edit_text(f"🏓 Pong! ({latency:.0f} ms)")
         logging.info(f"Ping ejecutado: {latency:.0f}ms")
 
-    # -------------------------------
-    # WEBHOOK DE TELEGRAM
+        # -------------------------------
+    # WEBHOOK HANDLER
     # -------------------------------
     async def webhook_handler(self, request: web.Request):
         """Procesa las actualizaciones entrantes del webhook de Telegram"""
@@ -99,10 +99,10 @@ class TwitchSubBot:
     # -------------------------------
     # ARRANQUE DE BOT Y SERVIDOR WEB
     # -------------------------------
-        async def start(self):
+    async def start(self):
         """Inicia el bot y el servidor web aiohttp"""
         logging.info("🚀 Iniciando TwitchSubBot...")
-            
+
         await self.db.init()
 
         app = ApplicationBuilder().token(self.token).build()
@@ -119,11 +119,11 @@ class TwitchSubBot:
             logging.info(f"📡 Webhook configurado → {resp}")
         except Exception as e:
             logging.error(f"❌ Error configurando webhook: {e}")
-            
+
         web_app = web.Application()
         web_app["bot"] = app
         web_app.router.add_post("/webhook", self.webhook_handler)
-            
+
         async def keepalive():
             while True:
                 try:
@@ -131,15 +131,17 @@ class TwitchSubBot:
                 except Exception:
                     pass
                 await asyncio.sleep(25)
-                
+
         asyncio.create_task(keepalive())
-            
+
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
         await site.start()
         logging.info("✅ Servidor web del bot iniciado (solo /webhook).")
-            
+
         await app.initialize()
         await app.start()
+
         await asyncio.Event().wait()
+        
