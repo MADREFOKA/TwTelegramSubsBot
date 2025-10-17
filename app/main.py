@@ -1,26 +1,21 @@
-import os
-import asyncio
+import os, asyncio
 from aiohttp import web
 from .db import Database
 from .bot import TwitchSubBot
 
 async def warmup_server():
-    """Servidor mínimo para que Render detecte el puerto"""
     async def ok(_):
         return web.Response(text="🟢 Bot en ejecución (Warmup OK)")
-
     app = web.Application()
     app.router.add_get("/", ok)
-    port = int(os.getenv("PORT", "8080"))
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
     await site.start()
-    print(f"✅ Puerto {port} abierto (warmup Render)")
+    print("✅ Puerto 8080 abierto (warmup Render)")
     return runner
 
 async def launch_bot():
-    """Inicia el bot completo en paralelo"""
     db_url = os.getenv("DATABASE_URL")
     db = Database(db_url)
     bot = TwitchSubBot(db)
