@@ -80,11 +80,11 @@ class TwitchSubBot:
         latency = (end - start) * 1000
         await msg.edit_text(f"🏓 Pong! ({latency:.0f} ms)")
         logging.info(f"Ping ejecutado: {latency:.0f}ms")
-
-        # -------------------------------
+        
+    # -------------------------------
     # WEBHOOK HANDLER
     # -------------------------------
-        async def webhook_handler(self, request: web.Request):
+    async def webhook_handler(self, request: web.Request):
         """Procesa las actualizaciones entrantes del webhook de Telegram"""
         try:
             data = await request.json()
