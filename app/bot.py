@@ -99,75 +99,16 @@ class TwitchSubBot:
     # -------------------------------
     # ARRANQUE DE BOT Y SERVIDOR WEB
     # -------------------------------
-    async def start(self):
+        async def start(self):
         """Inicia el bot y el servidor web aiohttp"""
         logging.info("🚀 Iniciando TwitchSubBot...")
-
-        # Inicializa BD
+            
         await self.db.init()
 
-        # Crea app de Telegram
         app = ApplicationBuilder().token(self.token).build()
         app.add_handler(CommandHandler("test", self.cmd_test))
         app.add_handler(CommandHandler("ping", self.cmd_ping))
 
-        # ⚙️ Crea primero el servidor web (Render necesita detectar el puerto)
-        web_app = web.Application()
-        web_app["bot"] = app
-
-        @web.middleware
-        async def allow_cors(request, handler):
-            try:
-                response = await handler(request)
-            except Exception as e:
-                logging.error(f"❌ Error interno en middleware: {e}")
-                response = web.Response(text=f"Middleware error: {e}", status=500)
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            return response
-
-        web_app.middlewares.append(allow_cors)
-
-        # ✅ Rutas principales
-        web_app.router.add_post("/webhook", self.webhook_handler)
-        web_app.router.add_post("/webhook/", self.webhook_handler)  # compatibilidad Telegram
-        web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
-        web_app.router.add_head("/", lambda _: web.Response(status=200, text="OK"))
-
-        # 🔍 Log de cada petición entrante (debug temporal)
-        async def log_request_middleware(app, handler):
-            async def middleware_handler(request):
-                logging.info(f"🌐 Petición entrante: {request.method} {request.path}")
-                return await handler(request)
-            return middleware_handler
-
-        web_app.middlewares.append(log_request_middleware(web_app, lambda r: web.Response(status=200)))
-
-        # Inicia el servidor aiohttp
-                # 🔁 Inicia servidor web primero
-        runner = web.AppRunner(web_app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
-        await site.start()
-
-        logging.info("✅ Servidor web inicializado, esperando tráfico...")
-
-        # 🔁 Modo keep-alive (Render requiere actividad HTTP para detectar puerto)
-        async def keepalive():
-            while True:
-                try:
-                    requests.get(f"{self.base_url}/", timeout=5)
-                    logging.info("💓 Keep-alive ping enviado")
-                except Exception as e:
-                    logging.warning(f"Keep-alive falló: {e}")
-                await asyncio.sleep(25)
-
-        asyncio.create_task(keepalive())
-
-        # ⚙️ Ahora inicializa y arranca el bot de Telegram
-        await app.initialize()
-        await app.start()
-
-        # Configura webhook en Telegram
         webhook_url = f"{self.base_url}/webhook"
         try:
             resp = requests.get(
@@ -178,6 +119,27 @@ class TwitchSubBot:
             logging.info(f"📡 Webhook configurado → {resp}")
         except Exception as e:
             logging.error(f"❌ Error configurando webhook: {e}")
-
-        # Mantiene el servicio activo
+            
+        web_app = web.Application()
+        web_app["bot"] = app
+        web_app.router.add_post("/webhook", self.webhook_handler)
+            
+        async def keepalive():
+            while True:
+                try:
+                    requests.get(f"{self.base_url}/", timeout=5)
+                except Exception:
+                    pass
+                await asyncio.sleep(25)
+                
+        asyncio.create_task(keepalive())
+            
+        runner = web.AppRunner(web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
+        await site.start()
+        logging.info("✅ Servidor web del bot iniciado (solo /webhook).")
+            
+        await app.initialize()
+        await app.start()
         await asyncio.Event().wait()
