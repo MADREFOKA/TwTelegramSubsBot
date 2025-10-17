@@ -7,7 +7,7 @@ from functools import wraps
 from .db import Database
 
 # -------------------------------
-# CONFIGURACIÓN DE LOGGING
+# LOGGING
 # -------------------------------
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
@@ -48,11 +48,9 @@ class TwitchSubBot:
     # UTILIDADES
     # -------------------------------
     def gen_state(self, n=32):
-        """Genera un token aleatorio para estados OAuth"""
         return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
 
     async def send_tg(self, chat_id, text, markdown=False):
-        """Envía mensajes por la API de Telegram"""
         try:
             payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
             if markdown:
@@ -66,47 +64,49 @@ class TwitchSubBot:
     # -------------------------------
     @catch_exceptions
     async def cmd_test(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando de prueba: verifica conexión y BD"""
         user = update.effective_user
         await update.message.reply_text(f"✅ Hola, {user.first_name}! El bot está operativo.")
         logging.info(f"Test ejecutado por @{user.username}")
 
     @catch_exceptions
     async def cmd_ping(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando simple para medir latencia"""
         start = time.time()
         msg = await update.message.reply_text("⏳ Pinging...")
-        end = time.time()
-        latency = (end - start) * 1000
+        latency = (time.time() - start) * 1000
         await msg.edit_text(f"🏓 Pong! ({latency:.0f} ms)")
         logging.info(f"Ping ejecutado: {latency:.0f}ms")
-        
+
     # -------------------------------
     # WEBHOOK HANDLER
     # -------------------------------
-        async def webhook_handler(self, request: web.Request):
+    async def webhook_handler(self, request: web.Request):
         """Procesa las actualizaciones entrantes del webhook de Telegram"""
         try:
             data = await request.json()
             logging.info(f"📩 Update recibido: {data}")
 
-            if not hasattr(self, "app") or not hasattr(self.app, "bot"):
-                logging.warning("⚠️ Webhook recibido antes de que app esté lista.")
-                return web.Response(text="App not ready", status=503)
+            if not hasattr(self, "app"):
+                logging.warning("⚠️ self.app aún no existe.")
+                return web.Response(text="App not initialized", status=503)
 
-            update = Update.de_json(data, self.app.bot)
+            bot_instance = getattr(self.app, "bot", None)
+            if bot_instance is None:
+                logging.warning("⚠️ self.app.bot aún no inicializado.")
+                return web.Response(text="Bot not ready", status=503)
+
+            update = Update.de_json(data, bot_instance)
             await self.app.process_update(update)
+            logging.info("✅ Update procesado correctamente.")
             return web.Response(text="OK", status=200)
 
         except Exception as e:
-            logging.error(f"❌ Error procesando webhook: {e}")
+            logging.error(f"❌ Error procesando webhook: {e}", exc_info=True)
             return web.Response(text=f"Error: {e}", status=500)
 
     # -------------------------------
     # ARRANQUE DE BOT Y SERVIDOR WEB
     # -------------------------------
     async def start(self):
-        """Inicia el bot y el servidor web aiohttp"""
         logging.info("🚀 Iniciando TwitchSubBot...")
 
         await self.db.init()
@@ -115,6 +115,7 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("test", self.cmd_test))
         app.add_handler(CommandHandler("ping", self.cmd_ping))
         self.app = app
+
         webhook_url = f"{self.base_url}/webhook"
         try:
             resp = requests.get(
@@ -129,6 +130,7 @@ class TwitchSubBot:
         web_app = web.Application()
         web_app["bot"] = app
         web_app.router.add_post("/webhook", self.webhook_handler)
+        web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
         async def keepalive():
             while True:
@@ -140,8 +142,13 @@ class TwitchSubBot:
 
         asyncio.create_task(keepalive())
 
+        runner = web.AppRunner(web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
+        await site.start()
+
         await app.initialize()
         await app.start()
 
+        logging.info("✅ Servidor web del bot iniciado y webhook activo.")
         await asyncio.Event().wait()
-        
