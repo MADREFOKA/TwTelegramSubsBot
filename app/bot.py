@@ -90,7 +90,7 @@ class TwitchSubBot:
         await request.app["bot"].process_update(update)
         return web.Response(text="OK")
 
-    async def start(self):
+        async def start(self):
         """Inicia el bot y el servidor web aiohttp"""
         logging.info("🚀 Iniciando TwitchSubBot...")
 
@@ -102,11 +102,15 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("test", self.cmd_test))
         app.add_handler(CommandHandler("ping", self.cmd_ping))
 
+        # ⚙️ Inicializamos primero el bot
+        await app.initialize()
+        await app.start()
+
         # Configura webhook en Telegram
         webhook_url = f"{self.base_url}/webhook"
-        requests.get(f"https://api.telegram.org/bot{self.token}/setWebhook",
-                     params={"url": webhook_url}, timeout=10)
-        logging.info(f"📡 Webhook configurado: {webhook_url}")
+        resp = requests.get(f"https://api.telegram.org/bot{self.token}/setWebhook",
+                            params={"url": webhook_url}, timeout=10).json()
+        logging.info(f"📡 Webhook configurado → {resp}")
 
         # Crea servidor aiohttp
         web_app = web.Application()
@@ -121,8 +125,5 @@ class TwitchSubBot:
 
         logging.info("✅ Servidor iniciado correctamente en Render")
 
-        # Arranca Telegram
-        await app.initialize()
-        await app.start()
-
+        # Mantiene el servicio vivo
         await asyncio.Event().wait()
