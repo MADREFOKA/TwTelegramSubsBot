@@ -84,14 +84,20 @@ class TwitchSubBot:
     # -------------------------------
     # WEBHOOK HANDLER
     # -------------------------------
-    async def webhook_handler(self, request: web.Request):
+        async def webhook_handler(self, request: web.Request):
         """Procesa las actualizaciones entrantes del webhook de Telegram"""
         try:
             data = await request.json()
             logging.info(f"📩 Update recibido: {data}")
+
+            if not hasattr(self, "app") or not hasattr(self.app, "bot"):
+                logging.warning("⚠️ Webhook recibido antes de que app esté lista.")
+                return web.Response(text="App not ready", status=503)
+
             update = Update.de_json(data, self.app.bot)
             await self.app.process_update(update)
-            return web.Response(text="OK")
+            return web.Response(text="OK", status=200)
+
         except Exception as e:
             logging.error(f"❌ Error procesando webhook: {e}")
             return web.Response(text=f"Error: {e}", status=500)
