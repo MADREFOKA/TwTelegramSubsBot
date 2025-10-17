@@ -95,7 +95,7 @@ class TwitchSubBot:
             logging.error(f"❌ Error procesando webhook: {e}")
             return web.Response(text=f"Error: {e}", status=500)
 
-    async def start(self):
+        async def start(self):
         """Inicia el bot y el servidor web aiohttp"""
         logging.info("🚀 Iniciando TwitchSubBot...")
 
@@ -126,17 +126,17 @@ class TwitchSubBot:
         # Crea servidor aiohttp
         web_app = web.Application()
         web_app["bot"] = app
-        web_app.router.add_post("/webhook", self.webhook_handler)
-        web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo"))
-        # Middleware para aceptar cualquier origen (Render Free a veces bloquea cabeceras)
+
         @web.middleware
         async def allow_cors(request, handler):
             response = await handler(request)
             response.headers["Access-Control-Allow-Origin"] = "*"
             return response
-            
+
         web_app.middlewares.append(allow_cors)
-        
+        web_app.router.add_post("/webhook", self.webhook_handler)
+        web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo"))
+
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
