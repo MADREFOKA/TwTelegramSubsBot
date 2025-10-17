@@ -95,7 +95,7 @@ class TwitchSubBot:
             logging.error(f"❌ Error procesando webhook: {e}")
             return web.Response(text=f"Error: {e}", status=500)
 
-        async def start(self):
+    async def start(self):
         """Inicia el bot y el servidor web aiohttp"""
         logging.info("🚀 Iniciando TwitchSubBot...")
 
@@ -129,20 +129,37 @@ class TwitchSubBot:
 
         @web.middleware
         async def allow_cors(request, handler):
-            response = await handler(request)
+            try:
+                response = await handler(request)
+            except Exception as e:
+                logging.error(f"❌ Error interno en middleware: {e}")
+                response = web.Response(text=f"Middleware error: {e}", status=500)
             response.headers["Access-Control-Allow-Origin"] = "*"
             return response
 
         web_app.middlewares.append(allow_cors)
+
+        # ✅ Rutas principales
         web_app.router.add_post("/webhook", self.webhook_handler)
-        web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo"))
+        web_app.router.add_post("/webhook/", self.webhook_handler)  # compatibilidad Telegram
+        web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
+        web_app.router.add_head("/", lambda _: web.Response(status=200, text="OK"))
+
+        # 🔍 Log de cada petición entrante (debug temporal)
+        async def log_request_middleware(app, handler):
+            async def middleware_handler(request):
+                logging.info(f"🌐 Petición entrante: {request.method} {request.path}")
+                return await handler(request)
+            return middleware_handler
+
+        web_app.middlewares.append(log_request_middleware(web_app, lambda r: web.Response(status=200)))
 
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
         await site.start()
 
-        logging.info("✅ Servidor iniciado correctamente en Render")
+        logging.info("✅ Servidor iniciado correctamente en Render (con doble ruta /webhook y logs debug)")
 
         # Mantiene el servicio vivo
         await asyncio.Event().wait()
