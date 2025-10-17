@@ -86,17 +86,14 @@ class TwitchSubBot:
             logging.info(f"📩 Update recibido: {data}")
 
             if not hasattr(self, "app"):
-                logging.warning("⚠️ self.app aún no existe.")
+                logging.warning("⚠️ self.app no está inicializada todavía.")
                 return web.Response(text="App not initialized", status=503)
 
-            bot_instance = getattr(self.app, "bot", None)
-            if bot_instance is None:
-                logging.warning("⚠️ self.app.bot aún no inicializado.")
-                return web.Response(text="Bot not ready", status=503)
+            # Crear el objeto Update y pasarlo correctamente a la app
+            update = Update.de_json(data, self.app.bot)
+            await self.app.update_queue.put(update)
 
-            update = Update.de_json(data, bot_instance)
-            await self.app.process_update(update)
-            logging.info("✅ Update procesado correctamente.")
+            logging.info("✅ Update enviado correctamente al bot.")
             return web.Response(text="OK", status=200)
 
         except Exception as e:
