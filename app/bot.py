@@ -84,13 +84,13 @@ class TwitchSubBot:
         # -------------------------------
     # WEBHOOK HANDLER
     # -------------------------------
-    async def webhook_handler(self, request: web.Request):
+        async def webhook_handler(self, request: web.Request):
         """Procesa las actualizaciones entrantes del webhook de Telegram"""
         try:
             data = await request.json()
             logging.info(f"📩 Update recibido: {data}")
-            update = Update.de_json(data, request.app["bot"].bot)
-            await request.app["bot"].process_update(update)
+            update = Update.de_json(data, self.app.bot)
+            await self.app.process_update(update)
             return web.Response(text="OK")
         except Exception as e:
             logging.error(f"❌ Error procesando webhook: {e}")
@@ -108,7 +108,7 @@ class TwitchSubBot:
         app = ApplicationBuilder().token(self.token).build()
         app.add_handler(CommandHandler("test", self.cmd_test))
         app.add_handler(CommandHandler("ping", self.cmd_ping))
-
+        self.app = app
         webhook_url = f"{self.base_url}/webhook"
         try:
             resp = requests.get(
