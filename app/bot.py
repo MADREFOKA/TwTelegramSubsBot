@@ -83,12 +83,17 @@ class TwitchSubBot:
     # -------------------------------
     # ARRANQUE DE WEBHOOK Y BOT
     # -------------------------------
-    async def webhook_handler(self, request: web.Request):
+        async def webhook_handler(self, request: web.Request):
         """Webhook de Telegram"""
-        data = await request.json()
-        update = Update.de_json(data, request.app["bot"].bot)
-        await request.app["bot"].process_update(update)
-        return web.Response(text="OK")
+        try:
+            data = await request.json()
+            logging.info(f"📩 Update recibido: {data}")
+            update = Update.de_json(data, request.app["bot"].bot)
+            await request.app["bot"].process_update(update)
+            return web.Response(text="OK")
+        except Exception as e:
+            logging.error(f"❌ Error procesando webhook: {e}")
+            return web.Response(text=f"Error: {e}", status=500)
 
     async def start(self):
         """Inicia el bot y el servidor web aiohttp"""
@@ -123,6 +128,13 @@ class TwitchSubBot:
         web_app["bot"] = app
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo"))
+        # Middleware para aceptar cualquier origen (Render Free a veces bloquea cabeceras)
+        async def allow_cors(request, handler):
+            response = await handler(request)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            return response
+
+        web_app.middlewares.append(allow_cors)
 
         runner = web.AppRunner(web_app)
         await runner.setup()
