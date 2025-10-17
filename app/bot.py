@@ -134,12 +134,6 @@ class TwitchSubBot:
 
         asyncio.create_task(keepalive())
 
-        runner = web.AppRunner(web_app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
-        await site.start()
-        logging.info("✅ Servidor web del bot iniciado (solo /webhook).")
-
         await app.initialize()
         await app.start()
 
