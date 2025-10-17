@@ -143,12 +143,25 @@ class TwitchSubBot:
         web_app.middlewares.append(log_request_middleware(web_app, lambda r: web.Response(status=200)))
 
         # Inicia el servidor aiohttp
+                # 🔁 Inicia servidor web primero
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
         await site.start()
 
-        logging.info("✅ Servidor iniciado correctamente en Render (puerto detectado)")
+        logging.info("✅ Servidor web inicializado, esperando tráfico...")
+
+        # 🔁 Modo keep-alive (Render requiere actividad HTTP para detectar puerto)
+        async def keepalive():
+            while True:
+                try:
+                    requests.get(f"{self.base_url}/", timeout=5)
+                    logging.info("💓 Keep-alive ping enviado")
+                except Exception as e:
+                    logging.warning(f"Keep-alive falló: {e}")
+                await asyncio.sleep(25)
+
+        asyncio.create_task(keepalive())
 
         # ⚙️ Ahora inicializa y arranca el bot de Telegram
         await app.initialize()
