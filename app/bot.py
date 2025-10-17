@@ -129,13 +129,14 @@ class TwitchSubBot:
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo"))
         # Middleware para aceptar cualquier origen (Render Free a veces bloquea cabeceras)
+        @web.middleware
         async def allow_cors(request, handler):
             response = await handler(request)
             response.headers["Access-Control-Allow-Origin"] = "*"
             return response
-
+            
         web_app.middlewares.append(allow_cors)
-
+        
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
