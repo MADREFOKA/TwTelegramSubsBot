@@ -32,6 +32,7 @@ class TwitchSubBot:
         self.cfg = Config()
         self.cipher = TokenCipher()
         self.app = None  # telegram app
+        self.cmds = Commands(self.db, self.cfg, self.cipher)
 
     # -------- utilidades compartidas
     async def send_tg(self, chat_id, text, md=False, html=False):
@@ -120,10 +121,10 @@ class TwitchSubBot:
         self.app = app  # ✅ Importante: guardar referencia
 
         # Handlers
-        app.add_handler(CommandHandler("setup", self.cmd_setup))
-        app.add_handler(CommandHandler("start", self.cmd_start))
-        app.add_handler(CommandHandler("setgroup", self.cmd_setgroup))
-        app.add_handler(CommandHandler("setfreegroup", self.cmd_setfreegroup))
+        app.add_handler(CommandHandler("setup", self.cmds.cmd_setup))
+        app.add_handler(CommandHandler("start", self.cmds.cmd_start))
+        app.add_handler(CommandHandler("setgroup", self.cmds.cmd_setgroup))
+        app.add_handler(CommandHandler("setfreegroup", self.cmds.cmd_setfreegroup))
         # (añadiremos /auditnow y privilegios después)
 
         # Configurar webhook de Telegram
