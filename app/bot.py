@@ -116,7 +116,7 @@ class TwitchSubBot:
         await self.db.init()
 
         # Crea aplicación Telegram
-        app = ApplicationBuilder().token(self.token).build()
+        app = ApplicationBuilder().token(self.cfg.token).build()
         self.app = app  # ✅ Importante: guardar referencia
 
         # Handlers
@@ -130,7 +130,7 @@ class TwitchSubBot:
         webhook_url = f"{self.base_url}/webhook"
         try:
             r = requests.get(
-                f"https://api.telegram.org/bot{self.token}/setWebhook",
+                f"https://api.telegram.org/bot{self.cfg.token}/setWebhook",
                 params={
                     "url": webhook_url,
                     "secret_token": self.secret_token,
