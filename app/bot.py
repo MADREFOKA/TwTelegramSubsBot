@@ -183,9 +183,166 @@ class TwitchSubBot:
             update.effective_chat.id, link.invite_link, b["broadcaster_id"]
         )
         await update.message.reply_text("✅ Grupo gratuito vinculado correctamente.")
+        
+    # ---------------------------------------
+    # /CHECKME — VIEWER
+    # ---------------------------------------
+    async def cmd_checkme(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat.type != "private":
+            return
+        user = update.effective_user
+        args = context.args if context.args else []
+        if not args:
+            return await update.message.reply_text("Uso: /checkme <streamer>")
+        slug = args[0].lower()
+
+        tuser = await self.db.one("SELECT * FROM telegram_users WHERE telegram_id=%s", user.id)
+        if not tuser:
+            return await update.message.reply_text("⚠️ No tienes una cuenta de Twitch vinculada aún. Usa /start <streamer> para vincularte.")
+
+        b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
+        if not b:
+            return await update.message.reply_text("❌ Streamer no encontrado.")
+        
+        b["access_token"] = await self.refresh_twitch_token(b)
+        headers = {"Authorization": f"Bearer {b['access_token']}", "Client-Id": self.client_id}
+        r = requests.get(f"{self.TW_API}/subscriptions/user", headers=headers,
+                         params={"broadcaster_id": b["broadcaster_id"], "user_id": tuser["linked_twitch_id"]}, timeout=15)
+        data = r.json().get("data", [])
+
+        if tuser["linked_twitch_id"] == b["broadcaster_id"]:
+            msg = (
+                f"👑 *{user.first_name}*, eres el propietario del canal *{b['slug']}*.\n\n"
+            )
+            if b.get("invite_link"):
+                msg += f"Acceso al grupo de subs:\n{b['invite_link']}"
+            else:
+                msg += "Aún no has vinculado tu grupo premium. Usa /setgroup dentro de un grupo con el bot de admin para hacerlo."
+        elif data:
+            sub_info = data[0]
+            renew, days = self.days_until(sub_info.get("ends_at", ""))
+            msg = (
+                f"💜 *{user.first_name}*, eres suscriptor de *{b['slug']}* 🎟️\n"
+                f"🗓️ Tu suscripción se renueva el *{renew}* "
+                f"(_{days} día{'s' if days != 1 else ''} restante{'s' if days != 1 else ''}_)\n\n"
+            )
+            if b.get("invite_link"):
+                msg += f"Aquí tienes el grupo de subs:\n{b['invite_link']}"
+            else:
+                msg += f"El streamer *{b['slug']}* aún no ha vinculado su grupo de subs."
+        else:
+            msg = (
+                f"😔 *{user.first_name}*, no apareces como suscriptor de *{b['slug']}*.\n\n"
+                f"Si te has suscrito recientemente, espera unos minutos y vuelve a ejecutar /checkme {b['slug']}.\n\n"
+            )
+            if b.get("free_invite_link"):
+                msg += f"🎟️ Aquí tienes el grupo gratuito:\n{b['free_invite_link']}"
+
+        await update.message.reply_text(msg, parse_mode="Markdown")
 
     # ---------------------------------------
-    # CALLBACK TWITCH — STREAMER (SETUP)
+    # PRIVILEGIOS — STREAMER
+    # ---------------------------------------
+    async def cmd_priv_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat.type != "private":
+            return
+        user = update.effective_user
+        if not context.args:
+            return await update.message.reply_text("Uso: /priv_add @usuario")
+
+        username = context.args[0].lstrip("@").lower()
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+        if not b:
+            return await update.message.reply_text("❌ Usa /setup primero.")
+
+        await self.db.exec("""
+            INSERT INTO privileged_users(broadcaster_id, username)
+            VALUES (%s,%s)
+            ON CONFLICT DO NOTHING
+        """, b["broadcaster_id"], username)
+        await update.message.reply_text(f"🔒 @{username} añadido a la whitelist (no será expulsado en auditorías).")
+
+    async def cmd_priv_remove(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat.type != "private":
+            return
+        user = update.effective_user
+        if not context.args:
+            return await update.message.reply_text("Uso: /priv_remove @usuario")
+
+        username = context.args[0].lstrip("@").lower()
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+        if not b:
+            return await update.message.reply_text("❌ Usa /setup primero.")
+
+        await self.db.exec("DELETE FROM privileged_users WHERE broadcaster_id=%s AND username=%s",
+                           b["broadcaster_id"], username)
+        await update.message.reply_text(f"🧹 @{username} eliminado de la whitelist.")
+
+    async def cmd_priv_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat.type != "private":
+            return
+        user = update.effective_user
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+        if not b:
+            return await update.message.reply_text("❌ Usa /setup primero.")
+
+        rows = await self.db.all("SELECT username FROM privileged_users WHERE broadcaster_id=%s", b["broadcaster_id"])
+        if not rows:
+            return await update.message.reply_text("⚙️ No tienes usuarios en la whitelist.")
+        lista = "\n".join([f"• @{r['username']}" for r in rows])
+        await update.message.reply_text(f"🔒 Lista de whitelist:\n{lista}")
+
+    # ---------------------------------------
+    # /AUDITNOW — STREAMER
+    # ---------------------------------------
+    async def cmd_auditnow(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat.type not in ("group", "supergroup"):
+            return
+        chat_id = update.effective_chat.id
+        user = update.effective_user
+
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+        if not b or b.get("group_id") != chat_id:
+            return await update.message.reply_text("⚠️ Este grupo no está vinculado como premium. Usa /setgroup aquí primero.")
+
+        privs = [r["username"] for r in await self.db.all(
+            "SELECT username FROM privileged_users WHERE broadcaster_id=%s", b["broadcaster_id"]
+        )]
+
+        b["access_token"] = await self.refresh_twitch_token(b)
+        headers = {"Authorization": f"Bearer {b['access_token']}", "Client-Id": self.client_id}
+
+        members = await context.bot.get_chat_administrators(chat_id)
+        total_checked, removed = 0, 0
+
+        async for member in context.bot.get_chat(chat_id).get_members():
+            if member.user.is_bot or member.user.username in privs:
+                continue
+            total_checked += 1
+
+            tuser = await self.db.one("SELECT linked_twitch_id FROM telegram_users WHERE telegram_id=%s", member.user.id)
+            if not tuser:
+                await context.bot.ban_chat_member(chat_id, member.user.id)
+                removed += 1
+                continue
+
+            r = requests.get(
+                f"{self.TW_API}/subscriptions/user",
+                headers=headers,
+                params={"broadcaster_id": b["broadcaster_id"], "user_id": tuser["linked_twitch_id"]},
+                timeout=10
+            )
+            data = r.json().get("data", [])
+            if not data and member.user.username not in privs:
+                await context.bot.ban_chat_member(chat_id, member.user.id)
+                removed += 1
+
+        await update.message.reply_text(
+            f"🧹 Auditoría completada.\n👥 Usuarios revisados: {total_checked}\n🚫 Expulsados: {removed}"
+        )
+
+    # ---------------------------------------
+    # CALLBACKS TWITCH
     # ---------------------------------------
     async def twitch_callback_setup(self, request: web.Request):
         try:
@@ -223,8 +380,11 @@ class TwitchSubBot:
                 f"✅ *Canal vinculado correctamente.*\n\n"
                 f"🎥 Canal: *{me['display_name']}*\n"
                 f"🔗 Enlace viewers:\n{bot_link}\n\n"
-                f"Usa /setgroup para vincular tu grupo premium\n"
-                f"y /setfreegroup para el grupo gratuito."
+                f"Usa /setgroup para vincular tu grupo premium dentro de un grupo con el bot de admin.\n"
+                f"y /setfreegroup para el grupo gratuito dentro de un grupo con el bot de admin.\n"
+                f"Usa /auditnow para revisar el grupo premium y eliminar automáticamente a usuarios no suscriptores.\n"
+                f"Con /priv_add @usuario puedes añadir un usuario a la whitelist.\n"
+                f"Para comprobar la whitelist usa /priv_list y /priv_remove @usuario para quitar a alguien.\n"
             )
             await self.send_tg(row["telegram_id"], msg, md=True)
             return web.Response(
@@ -234,7 +394,7 @@ class TwitchSubBot:
             )
         except Exception as e:
             return web.Response(text=f"❌ Error interno: {e}", status=500)
-
+            
     # ---------------------------------------
     # CALLBACK TWITCH — VIEWER (START)
     # ---------------------------------------
@@ -288,7 +448,17 @@ class TwitchSubBot:
                 timeout=15
             )
             data_sub = r.json().get("data", [])
-            if data_sub:
+
+            if me["id"] == b["broadcaster_id"]:
+                msg = (
+                    f"👑 *{me['display_name']}*, eres el propietario del canal *{b['slug']}*.\n\n"
+                )
+                if b.get("invite_link"):
+                    msg += f"Acceso al grupo de subs:\n{b['invite_link']}"
+                else:
+                    msg += "Aún no has vinculado tu grupo premium. Usa /setgroup dentro de un grupo con el bot de admin para hacerlo."
+            
+            elif data_sub:
                 sub_info = data_sub[0]
                 renew, days = self.days_until(sub_info.get("ends_at", ""))
                 msg = (
@@ -299,7 +469,8 @@ class TwitchSubBot:
                 if b.get("invite_link"):
                     msg += f"Aquí tienes el grupo de subs:\n{b['invite_link']}"
                 else:
-                    msg += "_Este streamer aún no ha vinculado su grupo de subs._"
+                    msg += f"El streamer *{b['slug']}* aún no ha vinculado su grupo de subs."
+            
             else:
                 msg = (
                     f"😔 *{me['display_name']}*, no apareces como suscriptor de *{b['slug']}*.\n\n"
@@ -334,10 +505,16 @@ class TwitchSubBot:
     async def start(self):
         await self.db.init()
         app = ApplicationBuilder().token(self.token).build()
+        
         app.add_handler(CommandHandler("setup", self.cmd_setup))
         app.add_handler(CommandHandler("start", self.cmd_start))
+        app.add_handler(CommandHandler("checkme", self.cmd_checkme))
         app.add_handler(CommandHandler("setgroup", self.cmd_setgroup))
         app.add_handler(CommandHandler("setfreegroup", self.cmd_setfreegroup))
+        app.add_handler(CommandHandler("auditnow", self.cmd_auditnow))
+        app.add_handler(CommandHandler("priv_add", self.cmd_priv_add))
+        app.add_handler(CommandHandler("priv_remove", self.cmd_priv_remove))
+        app.add_handler(CommandHandler("priv_list", self.cmd_priv_list))
         self.app = app
 
         webhook_url = f"{self.base_url}/webhook"
@@ -346,7 +523,7 @@ class TwitchSubBot:
             params={"url": webhook_url, "secret_token": self.secret_token, "allowed_updates": ["message"]},
             timeout=10
         )
-
+        
         web_app = web.Application()
         web_app["bot"] = app
         web_app.router.add_post("/webhook", self.webhook_handler)
