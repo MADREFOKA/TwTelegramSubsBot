@@ -58,6 +58,14 @@ class Commands:
             "INSERT INTO oauth_states(state,telegram_id,purpose,created_at) VALUES(%s,%s,%s,%s)",
             state, user.id, "broadcaster_setup", int(time.time())
         )
+        
+        new_link = f"{self.cfg.base_url}/dashboard/{b['slug']}?token={b['dashboard_token']}"
+        msg = (
+            "✅ <b>Grupo premium vinculado correctamente.</b>\n\n"
+            f"💜 Enlace viewers:\nhttps://t.me/{self.cfg.bot_username}?start={b['slug']}\n\n"
+            f"📊 <b>Dashboard privado:</b>\n{new_link}"
+        )
+        await self.send_tg(user.id, msg, html=True)
 
         redirect_uri = f"{self.cfg.base_url}/twitch/setup/callback"
         scope = quote(" ".join(self.SCOPE_SETUP))
