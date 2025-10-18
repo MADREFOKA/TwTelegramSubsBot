@@ -17,6 +17,7 @@ from app.db import Database
 from app.security import TokenCipher
 from app.commands import Commands
 from app.oauth import OAuthHandlers
+from app.auditor import Auditor
 
 class Config:
     def __init__(self):
@@ -38,6 +39,7 @@ class TwitchSubBot:
         self.app = None
         self.cmds = Commands(self.db, self.cfg, self.cipher)
         self.oauth = OAuthHandlers(self.cfg, self.db, self.send_tg, self.refresh_twitch_token, self.days_until, self.cipher)
+        self.auditor = Auditor(self.db, self.cfg, self.send_tg, self.refresh_twitch_token)
 
     async def global_error_handler(self, update, context):
         """Captura y registra errores de comandos Telegram."""
@@ -140,6 +142,10 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("start", self.cmds.cmd_start))
         app.add_handler(CommandHandler("setgroup", self.cmds.cmd_setgroup))
         app.add_handler(CommandHandler("setfreegroup", self.cmds.cmd_setfreegroup))
+        app.add_handler(CommandHandler("auditnow", self.auditor.cmd_auditnow))
+        app.add_handler(CommandHandler("priv_add", self.auditor.cmd_priv_add))
+        app.add_handler(CommandHandler("priv_remove", self.auditor.cmd_priv_remove))
+        app.add_handler(CommandHandler("priv_list", self.auditor.cmd_priv_list))
         app.add_error_handler(self.global_error_handler)
 
         webhook_url = f"{self.cfg.base_url}/webhook"
