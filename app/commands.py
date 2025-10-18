@@ -147,3 +147,33 @@ class Commands:
     def _gen_state(self, n=32):
         import secrets, string
         return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
+
+    # ---------------------------
+    # /REGENDASHLINK — STREAMER
+    # ---------------------------
+    async def cmd_regendashlink(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Permite al streamer regenerar su enlace privado del dashboard."""
+        if update.effective_chat.type != "private":
+            return await update.message.reply_text("⚠️ Usa este comando en privado.")
+
+        import secrets
+        user = update.effective_user
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+        if not b:
+            return await update.message.reply_text("❌ No tienes ningún canal vinculado. Usa /setup primero.")
+
+        new_token = secrets.token_urlsafe(32)
+        await self.db.exec(
+            "UPDATE broadcasters SET dashboard_token=%s WHERE broadcaster_id=%s",
+            new_token, b["broadcaster_id"]
+        )
+
+        new_link = f"{self.cfg.base_url}/dashboard/{b['slug']}?token={new_token}"
+        msg = (
+            "✅ <b>Enlace del dashboard actualizado</b>\n\n"
+            "📊 Nuevo acceso privado:\n"
+            f"{new_link}\n\n"
+            "🛡️ El enlace anterior ha sido invalidado por seguridad."
+        )
+        await self.send_tg(user.id, msg, html=True)
+
