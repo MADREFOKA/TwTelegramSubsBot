@@ -151,8 +151,8 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("priv_add", self.auditor.cmd_priv_add))
         app.add_handler(CommandHandler("priv_remove", self.auditor.cmd_priv_remove))
         app.add_handler(CommandHandler("priv_list", self.auditor.cmd_priv_list))
-        app.add_handler(ChatMemberHandler(self.auditor.on_member_update,
-                                          chat_member_types=["member", "administrator", "left", "kicked"]))
+        app.add_handler(ChatMemberHandler(self.auditor.on_member_update, chat_member_types=["member", "administrator", "left", "kicked"]))
+        app.add_handler(CommandHandler("regendashlink", self.cmds.cmd_regendashlink))
 
         # Planificador semanal (lunes 09:00)
         self.auditor.schedule_weekly_audit(app.job_queue)
