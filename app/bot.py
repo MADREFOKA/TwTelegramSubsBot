@@ -151,7 +151,8 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("priv_add", self.auditor.cmd_priv_add))
         app.add_handler(CommandHandler("priv_remove", self.auditor.cmd_priv_remove))
         app.add_handler(CommandHandler("priv_list", self.auditor.cmd_priv_list))
-        app.add_handler(ChatMemberHandler(self.auditor.on_member_update, chat_member_types=["member", "administrator", "left", "kicked"]))
+        app.add_handler(ChatMemberHandler(self.auditor.on_member_update,
+                                          chat_member_types=["member", "administrator", "left", "kicked"]))
 
         # Planificador semanal (lunes 09:00)
         self.auditor.schedule_weekly_audit(app.job_queue)
@@ -185,12 +186,17 @@ class TwitchSubBot:
 
         async def dashboard_page(request):
             slug = request.match_info.get("slug")
-            if not slug:
-                return web.Response(text="❌ Falta el nombre del streamer.", status=400)
+            token = request.query.get("token")
+
+            if not slug or not token:
+                return web.Response(text="❌ Acceso denegado (falta token).", status=403)
 
             b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
             if not b:
                 return web.Response(text="❌ Streamer no encontrado.", status=404)
+
+            if b.get("dashboard_token") != token:
+                return web.Response(text="🚫 Acceso denegado. Token inválido.", status=403)
 
             logs = await self.db.all("""
                 SELECT etiqueta_semana, total_miembros, expulsados, sin_vinculo, fallos, fecha_auditoria
@@ -201,11 +207,7 @@ class TwitchSubBot:
             """, slug)
 
             template = templates.get_template("dashboard.html")
-            html = template.render(
-                slug=slug,
-                logs=logs,
-                total_audits=len(logs)
-            )
+            html = template.render(slug=slug, logs=logs, total_audits=len(logs))
             return web.Response(text=html, content_type="text/html")
 
         # Rutas web
