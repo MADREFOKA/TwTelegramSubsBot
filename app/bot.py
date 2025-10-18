@@ -34,7 +34,7 @@ class TwitchSubBot:
         self.cipher = TokenCipher()
         self.app = None
         self.cmds = Commands(self.db, self.cfg, self.cipher)
-        self.oauth = OAuthHandlers(self.db, self.cfg, self.cipher)
+        self.oauth = OAuthHandlers(self.cfg, self.db, self.send_tg, self.refresh_twitch_token, self.days_until, self.cipher)
 
     # -------- utilidades compartidas
     async def send_tg(self, chat_id, text, md=False, html=False):
