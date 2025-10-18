@@ -92,57 +92,83 @@ class TwitchSubBot:
         except Exception:
             return "desconocida", 0
 
-    # -------- webhooks
+    # ---------------------------------------
+    # WEBHOOKS + INICIO
+    # ---------------------------------------
     async def webhook_handler(self, request: web.Request):
+        """Maneja los updates entrantes de Telegram"""
         token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-        if token and token != self.cfg.secret_token:
+        if token and token != self.secret_token:
             return web.Response(text="Unauthorized", status=403)
-        data = await request.json()
-        update = self.app.update_queue.bot._bot.update_de_json(data, self.app.bot)
-        await self.app.process_update(update)
-        return web.Response(text="OK")
+
+        try:
+            data = await request.json()
+            update = Update.de_json(data, self.app.bot)  # ✅ forma correcta
+            await self.app.process_update(update)
+            return web.Response(text="OK")
+        except Exception as e:
+            logging.exception("Error procesando webhook:")
+            return web.Response(text=f"Error interno: {e}", status=500)
 
     async def start(self):
+        """Inicializa BD, arranca el bot y el servidor web (para Render)"""
+        # Inicializa base de datos
         await self.db.init()
 
-        # Instancias de servicios
-        commands = Commands(self.cfg, self.db, self.send_tg, self.refresh_twitch_token, self.days_until)
-        oauth = OAuthHandlers(self.cfg, self.db, self.send_tg, self.refresh_twitch_token, self.days_until, self.cipher)
+        # Crea aplicación Telegram
+        app = ApplicationBuilder().token(self.token).build()
+        self.app = app  # ✅ Importante: guardar referencia
 
-        # Telegram
-        tg_app = ApplicationBuilder().token(self.cfg.token).build()
-        tg_app.add_handler(CommandHandler("setup", commands.setup))
-        tg_app.add_handler(CommandHandler("start", commands.start))
-        tg_app.add_handler(CommandHandler("checkme", commands.checkme))
-        tg_app.add_handler(CommandHandler("setgroup", commands.setgroup))
-        tg_app.add_handler(CommandHandler("setfreegroup", commands.setfreegroup))
-        tg_app.add_handler(CommandHandler("auditnow", commands.auditnow))
-        tg_app.add_handler(CommandHandler("priv_add", commands.priv_add))
-        tg_app.add_handler(CommandHandler("priv_remove", commands.priv_remove))
-        tg_app.add_handler(CommandHandler("priv_list", commands.priv_list))
-        self.app = tg_app
+        # Handlers
+        app.add_handler(CommandHandler("setup", self.cmd_setup))
+        app.add_handler(CommandHandler("start", self.cmd_start))
+        app.add_handler(CommandHandler("setgroup", self.cmd_setgroup))
+        app.add_handler(CommandHandler("setfreegroup", self.cmd_setfreegroup))
+        # (añadiremos /auditnow y privilegios después)
 
-        # Webhook
-        webhook_url = f"{self.cfg.base_url}/webhook"
-        requests.get(
-            f"https://api.telegram.org/bot{self.cfg.token}/setWebhook",
-            params={"url": webhook_url, "secret_token": self.cfg.secret_token, "allowed_updates": ["message"]},
-            timeout=10
-        )
+        # Configurar webhook de Telegram
+        webhook_url = f"{self.base_url}/webhook"
+        try:
+            r = requests.get(
+                f"https://api.telegram.org/bot{self.token}/setWebhook",
+                params={
+                    "url": webhook_url,
+                    "secret_token": self.secret_token,
+                    "allowed_updates": ["message"],
+                    "drop_pending_updates": True,
+                },
+                timeout=10,
+            )
+            if r.status_code == 200:
+                logging.info(f"✅ Webhook configurado correctamente: {webhook_url}")
+            else:
+                logging.warning(f"⚠️ Error al configurar webhook: {r.text}")
+        except Exception as e:
+            logging.error(f"❌ No se pudo establecer el webhook: {e}")
 
-        # Servidor web
+        # Crea aplicación web aiohttp
         web_app = web.Application()
+        web_app["bot"] = app
+
+        # Rutas
         web_app.router.add_post("/webhook", self.webhook_handler)
-        web_app.router.add_get("/twitch/setup/callback", oauth.twitch_callback_setup)
-        web_app.router.add_get("/twitch/callback", oauth.twitch_callback_user)
+        web_app.router.add_get("/twitch/setup/callback", self.twitch_callback_setup)
+        web_app.router.add_get("/twitch/callback", self.twitch_callback_user)
+        web_app.router.add_get("/twitch/redirect", self.twitch_callback_user)
+        web_app.router.add_get("/ping", lambda _: web.Response(text="🏓 Pong!"))
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
+        # Servidor en Render
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
         await site.start()
 
-        await tg_app.initialize()
-        await tg_app.start()
-        logging.info(f"✅ Webhook activo en: {webhook_url}")
+        # Inicia aplicación Telegram
+        await app.initialize()
+        await app.start()
+        logging.info("💜 Bot y servidor web iniciados correctamente.")
+        logging.info("💫 Esperando eventos de Telegram y Twitch...")
+
         await asyncio.Event().wait()
+
