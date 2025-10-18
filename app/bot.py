@@ -342,7 +342,6 @@ class TwitchSubBot:
         await update.message.reply_text(
             f"🧹 Auditoría completada.\n👥 Usuarios revisados: {total_checked}\n🚫 Expulsados: {removed}"
         )
-
     # ---------------------------------------
     # CALLBACK TWITCH — STREAMER (SETUP)
     # ---------------------------------------
@@ -352,11 +351,11 @@ class TwitchSubBot:
             code, state = params.get("code"), params.get("state")
             if not code or not state:
                 return web.Response(text="❌ Falta code/state.", status=400)
-
+    
             row = await self.db.one("SELECT * FROM oauth_states WHERE state=%s AND purpose='broadcaster_setup'", state)
             if not row:
                 return web.Response(text="❌ Estado inválido.", status=400)
-
+    
             # Intercambia el código por el token de Twitch
             data = requests.post(self.TW_TOKEN, data={
                 "client_id": self.client_id,
@@ -365,15 +364,15 @@ class TwitchSubBot:
                 "grant_type": "authorization_code",
                 "redirect_uri": f"{self.base_url}/twitch/setup/callback"
             }, timeout=15).json()
-
+    
             if "access_token" not in data:
                 return web.Response(text=f"Error token: {data}", status=400)
-
+    
             # Obtiene info del canal del streamer
             headers = {"Authorization": f"Bearer {data['access_token']}", "Client-Id": self.client_id}
             me = requests.get(f"{self.TW_API}/users", headers=headers, timeout=15).json()["data"][0]
             slug = me["login"].lower()
-
+    
             # Guarda o actualiza en la base de datos
             await self.db.exec("""
                 INSERT INTO broadcasters(broadcaster_id, owner_telegram_id, access_token, refresh_token,
@@ -385,30 +384,33 @@ class TwitchSubBot:
                               slug=EXCLUDED.slug
             """, me["id"], row["telegram_id"], data["access_token"], data.get("refresh_token"),
                int(time.time()), data.get("expires_in", 0), slug)
-
-            # Prepara mensaje seguro en HTML
+    
+            # Mensaje en HTML (sin etiquetas no soportadas)
             bot_link = f"https://t.me/{self.bot_username}?start={slug}"
+            # Escapar por seguridad nombres que puedan contener <, >, &
+            display_name = (me['display_name']
+                            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
             msg = (
-                f"✅ <b>Canal vinculado correctamente</b>\n\n"
-                f"🎥 Canal: <b>{me['display_name']}</b>\n"
+                "✅ <b>Canal vinculado correctamente</b>\n\n"
+                f"🎥 Canal: <b>{display_name}</b>\n"
                 f"🔗 Enlace viewers:\n{bot_link}\n\n"
-                f"Usa <code>/setgroup</code> para vincular tu grupo premium dentro de un grupo con el bot de admin.<br>"
-                f"Usa <code>/setfreegroup</code> para el grupo gratuito dentro de un grupo con el bot de admin.<br>"
-                f"Ejecuta <code>/auditnow</code> para revisar el grupo premium y eliminar automáticamente a usuarios no suscriptores.<br>"
-                f"Con <code>/priv_add @usuario</code> puedes añadir un usuario a la whitelist.<br>"
-                f"Consulta <code>/priv_list</code> o elimina con <code>/priv_remove @usuario</code>.<br>"
+                "Usa <code>/setgroup</code> para vincular tu grupo premium dentro de un grupo con el bot de admin.\n"
+                "Usa <code>/setfreegroup</code> para el grupo gratuito dentro de un grupo con el bot de admin.\n"
+                "Ejecuta <code>/auditnow</code> para revisar el grupo premium y eliminar automáticamente a usuarios no suscriptores.\n"
+                "Con <code>/priv_add @usuario</code> puedes añadir un usuario a la whitelist.\n"
+                "Consulta <code>/priv_list</code> o elimina con <code>/priv_remove @usuario</code>.\n"
             )
-
-            # Enviar mensaje al streamer (HTML seguro)
+    
+            # Enviar mensaje al streamer (HTML)
             await self.send_tg(row["telegram_id"], msg, html=True)
-
-            # Respuesta web al navegador
+    
+            # Respuesta web al navegador con redirección
             return web.Response(
                 text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.bot_username}'>"
                      "<h3>✅ Vinculación completada. Puedes volver a Telegram.</h3>",
                 content_type="text/html"
             )
-
+    
         except Exception as e:
             logging.exception("Error en twitch_callback_setup:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
