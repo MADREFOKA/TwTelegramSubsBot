@@ -40,8 +40,8 @@ class TwitchSubBot:
     def gen_state(self, n=32):
         return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
 
-    async def send_tg(self, chat_id, text, md=False):
-        """Envia mensaje a Telegram de forma fiable (asincrónica con aiohttp)"""
+    async def send_tg(self, chat_id, text, md=False, html=False):
+        """Envía mensaje a Telegram (modo seguro: Markdown o HTML)"""
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {
             "chat_id": chat_id,
@@ -50,7 +50,9 @@ class TwitchSubBot:
         }
         if md:
             payload["parse_mode"] = "Markdown"
-
+        elif html:
+            payload["parse_mode"] = "HTML"
+    
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=10) as resp:
@@ -58,7 +60,7 @@ class TwitchSubBot:
                         logging.warning(f"Telegram respondió {resp.status}: {await resp.text()}")
         except Exception as e:
             logging.error(f"❌ Error enviando mensaje Telegram: {e}")
-
+            
     async def refresh_twitch_token(self, broadcaster):
         """Refresca tokens vencidos automáticamente"""
         if not broadcaster.get("refresh_token"):
@@ -342,7 +344,7 @@ class TwitchSubBot:
         )
 
     # ---------------------------------------
-    # CALLBACKS TWITCH
+    # CALLBACK TWITCH — STREAMER (SETUP)
     # ---------------------------------------
     async def twitch_callback_setup(self, request: web.Request):
         try:
@@ -350,9 +352,12 @@ class TwitchSubBot:
             code, state = params.get("code"), params.get("state")
             if not code or not state:
                 return web.Response(text="❌ Falta code/state.", status=400)
+
             row = await self.db.one("SELECT * FROM oauth_states WHERE state=%s AND purpose='broadcaster_setup'", state)
             if not row:
                 return web.Response(text="❌ Estado inválido.", status=400)
+
+            # Intercambia el código por el token de Twitch
             data = requests.post(self.TW_TOKEN, data={
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
@@ -360,11 +365,16 @@ class TwitchSubBot:
                 "grant_type": "authorization_code",
                 "redirect_uri": f"{self.base_url}/twitch/setup/callback"
             }, timeout=15).json()
+
             if "access_token" not in data:
                 return web.Response(text=f"Error token: {data}", status=400)
+
+            # Obtiene info del canal del streamer
             headers = {"Authorization": f"Bearer {data['access_token']}", "Client-Id": self.client_id}
             me = requests.get(f"{self.TW_API}/users", headers=headers, timeout=15).json()["data"][0]
             slug = me["login"].lower()
+
+            # Guarda o actualiza en la base de datos
             await self.db.exec("""
                 INSERT INTO broadcasters(broadcaster_id, owner_telegram_id, access_token, refresh_token,
                                          token_obtained_at, token_expires_in, slug)
@@ -375,24 +385,32 @@ class TwitchSubBot:
                               slug=EXCLUDED.slug
             """, me["id"], row["telegram_id"], data["access_token"], data.get("refresh_token"),
                int(time.time()), data.get("expires_in", 0), slug)
+
+            # Prepara mensaje seguro en HTML
             bot_link = f"https://t.me/{self.bot_username}?start={slug}"
             msg = (
-                f"✅ *Canal vinculado correctamente.*\n\n"
-                f"🎥 Canal: *{me['display_name']}*\n"
+                f"✅ <b>Canal vinculado correctamente</b>\n\n"
+                f"🎥 Canal: <b>{me['display_name']}</b>\n"
                 f"🔗 Enlace viewers:\n{bot_link}\n\n"
-                f"Usa /setgroup para vincular tu grupo premium dentro de un grupo con el bot de admin.\n"
-                f"y /setfreegroup para el grupo gratuito dentro de un grupo con el bot de admin.\n"
-                f"Usa /auditnow para revisar el grupo premium y eliminar automáticamente a usuarios no suscriptores.\n"
-                f"Con /priv_add @usuario puedes añadir un usuario a la whitelist.\n"
-                f"Para comprobar la whitelist usa /priv_list y /priv_remove @usuario para quitar a alguien.\n"
+                f"Usa <code>/setgroup</code> para vincular tu grupo premium dentro de un grupo con el bot de admin.<br>"
+                f"Usa <code>/setfreegroup</code> para el grupo gratuito dentro de un grupo con el bot de admin.<br>"
+                f"Ejecuta <code>/auditnow</code> para revisar el grupo premium y eliminar automáticamente a usuarios no suscriptores.<br>"
+                f"Con <code>/priv_add @usuario</code> puedes añadir un usuario a la whitelist.<br>"
+                f"Consulta <code>/priv_list</code> o elimina con <code>/priv_remove @usuario</code>.<br>"
             )
-            await self.send_tg(row["telegram_id"], msg, md=True)
+
+            # Enviar mensaje al streamer (HTML seguro)
+            await self.send_tg(row["telegram_id"], msg, html=True)
+
+            # Respuesta web al navegador
             return web.Response(
                 text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.bot_username}'>"
                      "<h3>✅ Vinculación completada. Puedes volver a Telegram.</h3>",
                 content_type="text/html"
             )
+
         except Exception as e:
+            logging.exception("Error en twitch_callback_setup:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
             
     # ---------------------------------------
