@@ -172,7 +172,11 @@ class TwitchSubBot:
 
             bot_link = f"https://t.me/{self.bot_username}?start={slug}"
             await self.send_tg(row["telegram_id"], f"✅ Canal vinculado.\nEnlace viewers:\n{bot_link}")
-            raise web.HTTPFound(location=f"https://t.me/{self.bot_username}")  # redirige al bot
+            return web.Response(
+                text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.bot_username}'>"
+                     "<h3>✅ Vinculación completada. Puedes volver a Telegram.</h3>",
+                content_type="text/html"
+            )
         except Exception as e:
             logging.exception("Error en twitch_callback_setup:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
@@ -227,7 +231,11 @@ class TwitchSubBot:
                 if b.get('free_invite_link'):
                     msg += f"\nGrupo gratuito:\n{b['free_invite_link']}"
             await self.send_tg(row["telegram_id"], msg, md=True)
-            raise web.HTTPFound(location=f"https://t.me/{self.bot_username}")
+            return web.Response(
+                text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.bot_username}'>"
+                     "<h3>✅ Verificación completada. Puedes volver a Telegram.</h3>",
+                content_type="text/html"
+            )
         except Exception as e:
             logging.exception("Error en twitch_callback_user:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
