@@ -1,28 +1,31 @@
 # app/db.py
 import os
 import logging
+import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-
 class Database:
-    """Gestor de base de datos con pool de conexiones y manejo de errores"""
-
     def __init__(self):
         self.url = os.getenv("DATABASE_URL")
         if not self.url:
             raise ValueError("❌ Falta DATABASE_URL")
-        # Creamos el pool con 5 conexiones máximo (ajustable)
+
+        # Pool de conexiones persistente
         self.pool = AsyncConnectionPool(
             conninfo=self.url,
-            open=True,          # Abre conexiones de inmediato
-            max_size=5,         # Evita saturar NeonDB
-            num_workers=2,      # Mantiene el pool activo en background
-            timeout=30          # Evita bloqueos prolongados
+            min_size=1,
+            max_size=5,
+            max_idle=30,
+            timeout=10,
+            open=False  # lo abrimos manualmente en init()
         )
 
     async def init(self):
-        """Crea tablas e índices si no existen (idempotente y segura)."""
+        """Inicializa el pool y verifica el esquema."""
+        await self.pool.open()
+        logging.info("🗄️ Pool de conexiones abierto correctamente.")
+
         CREATE_SQL = """
         CREATE TABLE IF NOT EXISTS telegram_users (
           telegram_id BIGINT PRIMARY KEY,
@@ -42,7 +45,8 @@ class Database:
           invite_link TEXT,
           free_group_id BIGINT,
           free_invite_link TEXT,
-          slug TEXT
+          slug TEXT,
+          dashboard_token TEXT
         );
 
         CREATE TABLE IF NOT EXISTS oauth_states (
@@ -68,14 +72,12 @@ class Database:
                 for stmt in [s.strip() for s in CREATE_SQL.split(";") if s.strip()]:
                     await cur.execute(stmt)
             await con.commit()
-
         logging.info("🗄️ Esquema de base de datos verificado correctamente.")
 
-    # ---------------------------
-    # Métodos de consulta
-    # ---------------------------
+    # ----------------------------------------------------------
+    # Funciones básicas con reconexión y logging seguro
+    # ----------------------------------------------------------
     async def exec(self, query: str, *params):
-        """Ejecuta INSERT/UPDATE/DELETE."""
         try:
             async with self.pool.connection() as con:
                 async with con.cursor() as cur:
@@ -86,7 +88,6 @@ class Database:
             raise
 
     async def one(self, query: str, *params):
-        """Obtiene una sola fila."""
         try:
             async with self.pool.connection() as con:
                 con.row_factory = dict_row
@@ -94,11 +95,10 @@ class Database:
                     await cur.execute(query.replace("?", "%s"), params)
                     return await cur.fetchone()
         except Exception as e:
-            logging.error(f"❌ Error en consulta one(): {e}\nSQL: {query}")
-            return None
+            logging.error(f"❌ Error en query (one): {e}\nSQL: {query}")
+            raise
 
     async def all(self, query: str, *params):
-        """Obtiene múltiples filas."""
         try:
             async with self.pool.connection() as con:
                 con.row_factory = dict_row
@@ -106,5 +106,5 @@ class Database:
                     await cur.execute(query.replace("?", "%s"), params)
                     return await cur.fetchall()
         except Exception as e:
-            logging.error(f"❌ Error en consulta all(): {e}\nSQL: {query}")
-            return []
+            logging.error(f"❌ Error en query (all): {e}\nSQL: {query}")
+            raise
