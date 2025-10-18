@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from aiohttp import web
 from telegram.ext import ApplicationBuilder, CommandHandler, ChatMemberHandler
 from telegram import Update
-from jinja2 import Environment, FileSystemLoader
 
 from app.db import Database
 from app.security import TokenCipher
@@ -39,17 +38,12 @@ class TwitchSubBot:
         self.cipher = TokenCipher()
         self.app = None
 
-        # Componentes principales
+        # Componentes
         self.cmds = Commands(self.db, self.cfg, self.cipher)
-        self.oauth = OAuthHandlers(
-            self.cfg, self.db, self.send_tg,
-            self.refresh_twitch_token, self.days_until, self.cipher
-        )
+        self.oauth = OAuthHandlers(self.cfg, self.db, self.send_tg, self.refresh_twitch_token, self.days_until, self.cipher)
         self.auditor = Auditor(self.db, self.cfg, self.send_tg, self.refresh_twitch_token)
+        self.dashboard = Dashboard(self.db)
 
-    # ----------------------------------------------------------------------
-    # UTILIDAD PARA ENVIAR MENSAJES A TELEGRAM
-    # ----------------------------------------------------------------------
     async def send_tg(self, chat_id, text, md=False, html=False):
         url = f"https://api.telegram.org/bot{self.cfg.token}/sendMessage"
         payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
@@ -65,12 +59,8 @@ class TwitchSubBot:
         except Exception as e:
             logging.error(f"send_tg error: {e}")
 
-    # ----------------------------------------------------------------------
-    # REFRESCO DE TOKENS DE TWITCH (con cifrado Fernet)
-    # ----------------------------------------------------------------------
     async def refresh_twitch_token(self, broadcaster_row: dict) -> str:
-        """Devuelve un access_token válido, refrescando si es necesario."""
-        # 🔓 Descifrar tokens guardados
+        # Descifrar tokens
         access_token = self.cipher.decrypt(broadcaster_row["access_token"])
         refresh_token = self.cipher.decrypt(broadcaster_row.get("refresh_token"))
         obtained = broadcaster_row["token_obtained_at"]
@@ -78,8 +68,6 @@ class TwitchSubBot:
 
         if not refresh_token:
             return access_token
-
-        # Si faltan más de 24h, seguimos usando el actual
         if time.time() - obtained < max(0, expires - 86400):
             return access_token
 
@@ -93,11 +81,8 @@ class TwitchSubBot:
             if "access_token" in data:
                 access_token = data["access_token"]
                 refresh_token = data.get("refresh_token", refresh_token)
-
-                # 🔒 Cifrar los nuevos tokens antes de guardarlos
                 enc_access = self.cipher.encrypt(access_token)
                 enc_refresh = self.cipher.encrypt(refresh_token)
-
                 await self.db.exec("""
                     UPDATE broadcasters
                     SET access_token=%s, refresh_token=%s, token_obtained_at=%s, token_expires_in=%s
@@ -105,12 +90,9 @@ class TwitchSubBot:
                 """, enc_access, enc_refresh, int(time.time()), data.get("expires_in", expires),
                    broadcaster_row["broadcaster_id"])
         except Exception as e:
-            logging.warning(f"Error al refrescar token de Twitch: {e}")
+            logging.warning(f"Error refresh token: {e}")
         return access_token
 
-    # ----------------------------------------------------------------------
-    # UTILIDAD: días restantes de suscripción
-    # ----------------------------------------------------------------------
     def days_until(self, iso_ts: str):
         try:
             renew_time = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
@@ -121,9 +103,6 @@ class TwitchSubBot:
         except Exception:
             return "desconocida", 0
 
-    # ----------------------------------------------------------------------
-    # WEBHOOKS DE TELEGRAM
-    # ----------------------------------------------------------------------
     async def webhook_handler(self, request: web.Request):
         token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if token and token != self.cfg.secret_token:
@@ -137,33 +116,36 @@ class TwitchSubBot:
             logging.exception("Error procesando webhook:")
             return web.Response(text=f"Error interno: {e}", status=500)
 
-    # ----------------------------------------------------------------------
-    # INICIO DEL BOT Y SERVIDOR WEB
-    # ----------------------------------------------------------------------
     async def start(self):
         await self.db.init()
 
         app = ApplicationBuilder().token(self.cfg.token).build()
         self.app = app
 
-        # Comandos principales
+        # Handlers comandos
         app.add_handler(CommandHandler("setup", self.cmds.cmd_setup))
         app.add_handler(CommandHandler("start", self.cmds.cmd_start))
         app.add_handler(CommandHandler("setgroup", self.cmds.cmd_setgroup))
         app.add_handler(CommandHandler("setfreegroup", self.cmds.cmd_setfreegroup))
         app.add_handler(CommandHandler("regendashlink", self.cmds.cmd_regendashlink))
 
-        # Auditoría y privilegios
+        # Auditoría + privilegios
         app.add_handler(CommandHandler("auditnow", self.auditor.cmd_auditnow))
         app.add_handler(CommandHandler("priv_add", self.auditor.cmd_priv_add))
         app.add_handler(CommandHandler("priv_remove", self.auditor.cmd_priv_remove))
         app.add_handler(CommandHandler("priv_list", self.auditor.cmd_priv_list))
+
+        # Tracking de miembros para censo
         app.add_handler(ChatMemberHandler(self.auditor.on_member_update,
                                           chat_member_types=["member", "administrator", "left", "kicked"]))
 
-        self.auditor.schedule_weekly_audit(app.job_queue)
+        # Programación semanal si hay JobQueue disponible
+        try:
+            self.auditor.schedule_weekly_audit(app.job_queue)
+        except Exception as e:
+            logging.warning(f"⚠️ No se pudo programar la auditoría semanal: {e}")
 
-        # Configurar webhook
+        # Webhook Telegram
         webhook_url = f"{self.cfg.base_url}/webhook"
         try:
             r = requests.get(
@@ -187,45 +169,11 @@ class TwitchSubBot:
         web_app = web.Application()
         web_app["bot"] = app
 
-        templates = Environment(loader=FileSystemLoader("app/templates"))
-
-        async def dashboard_page(request):
-            slug = request.match_info.get("slug")
-            token = request.query.get("token")
-
-            if not slug or not token:
-                return web.Response(text="❌ Acceso denegado (falta token).", status=403)
-
-            b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
-            if not b:
-                return web.Response(text="❌ Streamer no encontrado.", status=404)
-
-            if b.get("dashboard_token") != token:
-                return web.Response(text="🚫 Acceso denegado. Token inválido.", status=403)
-
-            logs = await self.db.all("""
-                SELECT etiqueta_semana, total_miembros, expulsados, sin_vinculo, fallos, fecha_auditoria
-                FROM audit_logs
-                WHERE streamer_slug=%s
-                ORDER BY fecha_auditoria DESC
-                LIMIT 20
-            """, slug)
-
-            template = templates.get_template("dashboard.html")
-            html = template.render(slug=slug, logs=logs, total_audits=len(logs))
-            return web.Response(text=html, content_type="text/html")
-
-        # Rutas
+        # ── Rutas web ─────────────────────────
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
         web_app.router.add_get("/twitch/callback", self.oauth.twitch_callback_user)
-        
-        # Dashboard visual
-        from app.dashboard import Dashboard
-        self.dashboard = Dashboard(self.db)
         web_app.router.add_get("/dashboard/{slug}", self.dashboard.page)
-        
-        # Rutas básicas
         web_app.router.add_get("/ping", lambda _: web.Response(text="🏓 Pong!"))
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
