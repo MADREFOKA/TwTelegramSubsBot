@@ -7,7 +7,7 @@ class Dashboard:
         self.db = db
 
     async def page(self, request: web.Request):
-        """Dashboard web básico del streamer."""
+        """Dashboard web básico del streamer (seguro y solo por token)."""
         try:
             slug = request.match_info.get("slug")
             token = request.rel_url.query.get("token")
@@ -15,22 +15,25 @@ class Dashboard:
             if not slug or not token:
                 return web.Response(text="❌ Parámetros inválidos.", status=400)
 
+            # Buscar streamer por slug
             b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
             if not b or b.get("dashboard_token") != token:
                 return web.Response(text="❌ Acceso no autorizado.", status=403)
 
+            # Intentar leer auditorías por slug
             try:
                 logs = await self.db.all("""
                     SELECT etiqueta_semana, total_miembros, expulsados, sin_vinculo, fallos, fecha_auditoria
                     FROM audit_logs
-                    WHERE broadcaster_id=%s
+                    WHERE streamer_slug=%s
                     ORDER BY fecha_auditoria DESC
                     LIMIT 20
-                """, b["broadcaster_id"])
+                """, b["slug"])
             except Exception as e:
                 logging.error(f"Error al obtener logs del dashboard: {e}")
                 logs = []
 
+            # Construir HTML
             rows_html = ""
             if logs:
                 for log in logs:
