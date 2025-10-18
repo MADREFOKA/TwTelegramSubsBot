@@ -8,6 +8,7 @@ import aiohttp
 from datetime import datetime, timezone
 from aiohttp import web
 from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram import Update
 
 from app.db import Database
 from app.security import TokenCipher
@@ -99,12 +100,12 @@ class TwitchSubBot:
     async def webhook_handler(self, request: web.Request):
         """Maneja los updates entrantes de Telegram"""
         token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-        if token and token != self.secret_token:
+        if token and token != self.cfg.secret_token:
             return web.Response(text="Unauthorized", status=403)
 
         try:
             data = await request.json()
-            update = Update.de_json(data, self.app.bot)  # ✅ forma correcta
+            update = Update.de_json(data, self.app.bot)
             await self.app.process_update(update)
             return web.Response(text="OK")
         except Exception as e:
@@ -113,28 +114,23 @@ class TwitchSubBot:
 
     async def start(self):
         """Inicializa BD, arranca el bot y el servidor web (para Render)"""
-        # Inicializa base de datos
         await self.db.init()
 
-        # Crea aplicación Telegram
         app = ApplicationBuilder().token(self.cfg.token).build()
-        self.app = app  # ✅ Importante: guardar referencia
+        self.app = app
 
-        # Handlers
         app.add_handler(CommandHandler("setup", self.cmds.cmd_setup))
         app.add_handler(CommandHandler("start", self.cmds.cmd_start))
         app.add_handler(CommandHandler("setgroup", self.cmds.cmd_setgroup))
         app.add_handler(CommandHandler("setfreegroup", self.cmds.cmd_setfreegroup))
-        # (añadiremos /auditnow y privilegios después)
 
-        # Configurar webhook de Telegram
-        webhook_url = f"{self.base_url}/webhook"
+        webhook_url = f"{self.cfg.base_url}/webhook"
         try:
             r = requests.get(
                 f"https://api.telegram.org/bot{self.cfg.token}/setWebhook",
                 params={
                     "url": webhook_url,
-                    "secret_token": self.secret_token,
+                    "secret_token": self.cfg.secret_token,
                     "allowed_updates": ["message"],
                     "drop_pending_updates": True,
                 },
@@ -147,11 +143,9 @@ class TwitchSubBot:
         except Exception as e:
             logging.error(f"❌ No se pudo establecer el webhook: {e}")
 
-        # Crea aplicación web aiohttp
         web_app = web.Application()
         web_app["bot"] = app
 
-        # Rutas
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/twitch/setup/callback", self.twitch_callback_setup)
         web_app.router.add_get("/twitch/callback", self.twitch_callback_user)
@@ -159,17 +153,14 @@ class TwitchSubBot:
         web_app.router.add_get("/ping", lambda _: web.Response(text="🏓 Pong!"))
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
-        # Servidor en Render
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
         await site.start()
 
-        # Inicia aplicación Telegram
         await app.initialize()
         await app.start()
         logging.info("💜 Bot y servidor web iniciados correctamente.")
         logging.info("💫 Esperando eventos de Telegram y Twitch...")
 
         await asyncio.Event().wait()
-
