@@ -5,19 +5,17 @@ import logging
 import asyncio
 import requests
 import aiohttp
-import traceback
-
 from datetime import datetime, timezone
 from aiohttp import web
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, ChatMemberHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ChatMemberHandler
 from telegram import Update
-from telegram.error import TelegramError
 
 from app.db import Database
 from app.security import TokenCipher
 from app.commands import Commands
 from app.oauth import OAuthHandlers
 from app.auditor import Auditor
+
 
 class Config:
     def __init__(self):
@@ -31,30 +29,22 @@ class Config:
         self.TW_AUTH = "https://id.twitch.tv/oauth2/authorize"
         self.TW_TOKEN = "https://id.twitch.tv/oauth2/token"
 
+
 class TwitchSubBot:
     def __init__(self, db: Database):
         self.db = db
         self.cfg = Config()
         self.cipher = TokenCipher()
         self.app = None
+
+        # Componentes principales
         self.cmds = Commands(self.db, self.cfg, self.cipher)
         self.oauth = OAuthHandlers(self.cfg, self.db, self.send_tg, self.refresh_twitch_token, self.days_until, self.cipher)
         self.auditor = Auditor(self.db, self.cfg, self.send_tg, self.refresh_twitch_token)
 
-    async def global_error_handler(self, update, context):
-        """Captura y registra errores de comandos Telegram."""
-        err_msg = f"⚠️ Error inesperado en comando: {context.error}"
-        logging.error(err_msg)
-        logging.error(traceback.format_exc())
-        try:
-            if update and update.effective_message:
-                await update.effective_message.reply_text(
-                    "⚠️ Ha ocurrido un error interno. Intenta de nuevo en unos segundos."
-                )
-        except Exception:
-            pass
-
-    # -------- utilidades compartidas
+    # ----------------------------------------------------------------------
+    # UTILIDAD PARA ENVIAR MENSAJES A TELEGRAM
+    # ----------------------------------------------------------------------
     async def send_tg(self, chat_id, text, md=False, html=False):
         url = f"https://api.telegram.org/bot{self.cfg.token}/sendMessage"
         payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
@@ -66,12 +56,14 @@ class TwitchSubBot:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=10) as resp:
                     if resp.status != 200:
-                        logging.warning(f"Telegram  {resp.status}: {await resp.text()}")
+                        logging.warning(f"Telegram {resp.status}: {await resp.text()}")
         except Exception as e:
             logging.error(f"send_tg error: {e}")
 
+    # ----------------------------------------------------------------------
+    # REFRESCO DE TOKENS DE TWITCH
+    # ----------------------------------------------------------------------
     async def refresh_twitch_token(self, broadcaster_row: dict) -> str:
-        """Devuelve access_token válido (aquí sin cifrado; en la fase 2 lo añadimos)."""
         access_token = broadcaster_row["access_token"]
         refresh_token = broadcaster_row.get("refresh_token")
         obtained = broadcaster_row["token_obtained_at"]
@@ -79,7 +71,8 @@ class TwitchSubBot:
 
         if not refresh_token:
             return access_token
-        # Si faltan más de 24h, seguimos usando actual
+
+        # Si faltan más de 24h, seguimos usando el actual
         if time.time() - obtained < max(0, expires - 86400):
             return access_token
 
@@ -100,9 +93,12 @@ class TwitchSubBot:
                 """, access_token, refresh_token, int(time.time()), data.get("expires_in", expires),
                    broadcaster_row["broadcaster_id"])
         except Exception as e:
-            logging.warning(f"Error refresh token: {e}")
+            logging.warning(f"Error al refrescar token de Twitch: {e}")
         return access_token
 
+    # ----------------------------------------------------------------------
+    # UTILIDAD: días restantes de suscripción
+    # ----------------------------------------------------------------------
     def days_until(self, iso_ts: str):
         try:
             renew_time = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
@@ -113,15 +109,14 @@ class TwitchSubBot:
         except Exception:
             return "desconocida", 0
 
-    # ---------------------------------------
-    # WEBHOOKS + INICIO
-    # ---------------------------------------
+    # ----------------------------------------------------------------------
+    # WEBHOOKS DE TELEGRAM
+    # ----------------------------------------------------------------------
     async def webhook_handler(self, request: web.Request):
-        """Maneja los updates entrantes de Telegram"""
+        """Procesa los updates entrantes de Telegram."""
         token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         if token and token != self.cfg.secret_token:
             return web.Response(text="Unauthorized", status=403)
-
         try:
             data = await request.json()
             update = Update.de_json(data, self.app.bot)
@@ -131,26 +126,33 @@ class TwitchSubBot:
             logging.exception("Error procesando webhook:")
             return web.Response(text=f"Error interno: {e}", status=500)
 
+    # ----------------------------------------------------------------------
+    # INICIO DEL BOT Y SERVIDOR WEB
+    # ----------------------------------------------------------------------
     async def start(self):
-        """Inicializa BD, arranca el bot y el servidor web (para Render)"""
+        """Inicializa la base de datos, el bot y el servidor web (Render)."""
         await self.db.init()
 
         app = ApplicationBuilder().token(self.cfg.token).build()
         self.app = app
 
+        # ----------------- Handlers de comandos -----------------
         app.add_handler(CommandHandler("setup", self.cmds.cmd_setup))
         app.add_handler(CommandHandler("start", self.cmds.cmd_start))
         app.add_handler(CommandHandler("setgroup", self.cmds.cmd_setgroup))
         app.add_handler(CommandHandler("setfreegroup", self.cmds.cmd_setfreegroup))
+
+        # ----------------- Auditoría y privilegios -----------------
         app.add_handler(CommandHandler("auditnow", self.auditor.cmd_auditnow))
         app.add_handler(CommandHandler("priv_add", self.auditor.cmd_priv_add))
         app.add_handler(CommandHandler("priv_remove", self.auditor.cmd_priv_remove))
         app.add_handler(CommandHandler("priv_list", self.auditor.cmd_priv_list))
         app.add_handler(ChatMemberHandler(self.auditor.on_member_update, chat_member_types=["member", "administrator", "left", "kicked"]))
+
+        # Planificador semanal (lunes 09:00)
         self.auditor.schedule_weekly_audit(app.job_queue)
 
-        app.add_error_handler(self.global_error_handler)
-        
+        # ----------------- Webhooks -----------------
         webhook_url = f"{self.cfg.base_url}/webhook"
         try:
             r = requests.get(
@@ -158,7 +160,7 @@ class TwitchSubBot:
                 params={
                     "url": webhook_url,
                     "secret_token": self.cfg.secret_token,
-                    "allowed_updates": ["message"],
+                    "allowed_updates": ["message", "chat_member"],
                     "drop_pending_updates": True,
                 },
                 timeout=10,
@@ -170,6 +172,7 @@ class TwitchSubBot:
         except Exception as e:
             logging.error(f"❌ No se pudo establecer el webhook: {e}")
 
+        # ----------------- Servidor web aiohttp -----------------
         web_app = web.Application()
         web_app["bot"] = app
 
@@ -182,6 +185,7 @@ class TwitchSubBot:
 
         runner = web.AppRunner(web_app)
         await runner.setup()
+
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
         await site.start()
 
@@ -190,4 +194,6 @@ class TwitchSubBot:
         logging.info("💜 Bot y servidor web iniciados correctamente.")
         logging.info("💫 Esperando eventos de Telegram y Twitch...")
 
+        # 🔧 Pausa breve para que Render detecte el puerto correctamente
+        await asyncio.sleep(1)
         await asyncio.Event().wait()
