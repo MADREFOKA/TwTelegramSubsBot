@@ -32,8 +32,9 @@ class TwitchSubBot:
         self.db = db
         self.cfg = Config()
         self.cipher = TokenCipher()
-        self.app = None  # telegram app
+        self.app = None
         self.cmds = Commands(self.db, self.cfg, self.cipher)
+        self.oauth = OAuthHandlers(self.db, self.cfg, self.cipher)
 
     # -------- utilidades compartidas
     async def send_tg(self, chat_id, text, md=False, html=False):
@@ -147,9 +148,9 @@ class TwitchSubBot:
         web_app["bot"] = app
 
         web_app.router.add_post("/webhook", self.webhook_handler)
-        web_app.router.add_get("/twitch/setup/callback", self.twitch_callback_setup)
-        web_app.router.add_get("/twitch/callback", self.twitch_callback_user)
-        web_app.router.add_get("/twitch/redirect", self.twitch_callback_user)
+        web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
+        web_app.router.add_get("/twitch/callback", self.oauth.twitch_callback_user)
+        web_app.router.add_get("/twitch/redirect", self.oauth.twitch_callback_user)
         web_app.router.add_get("/ping", lambda _: web.Response(text="🏓 Pong!"))
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
