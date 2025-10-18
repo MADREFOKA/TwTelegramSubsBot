@@ -31,12 +31,17 @@ class TwitchSubBot:
     def gen_state(self, n=32):
         return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
 
-    async def send_tg(self, chat_id, text, md=False):
+    async def send_tg(self, chat_id, text, markdown=False):
+        """Envía mensajes de texto a Telegram (soporte Markdown opcional)"""
         try:
             payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
-            if md:
+            if markdown:
                 payload["parse_mode"] = "Markdown"
-            requests.post(f"https://api.telegram.org/bot{self.token}/sendMessage", json=payload, timeout=10)
+            requests.post(
+                f"https://api.telegram.org/bot{self.token}/sendMessage",
+                json=payload,
+                timeout=10
+            )
         except Exception as e:
             logging.warning(f"Error enviando mensaje Telegram: {e}")
 
