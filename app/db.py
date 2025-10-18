@@ -1,14 +1,17 @@
 # app/db.py
+import os
+import logging
 import psycopg
 from psycopg.rows import dict_row
-import logging
 
 class Database:
-    def __init__(self, url: str):
-        self.url = url
+    def __init__(self):
+        self.url = os.getenv("DATABASE_URL")
+        if not self.url:
+            raise ValueError("❌ Falta DATABASE_URL")
 
     async def init(self):
-        """Crea tablas necesarias para el sistema multi-streamer"""
+        """Crea tablas e índices si no existen (mínimos)."""
         CREATE_SQL = """
         CREATE TABLE IF NOT EXISTS telegram_users (
           telegram_id BIGINT PRIMARY KEY,
@@ -48,28 +51,27 @@ class Database:
         CREATE INDEX IF NOT EXISTS idx_broadcaster_slug ON broadcasters(slug);
         CREATE INDEX IF NOT EXISTS idx_oauth_telegram ON oauth_states(telegram_id);
         """
-
         async with await psycopg.AsyncConnection.connect(self.url) as con:
             async with con.cursor() as cur:
-                for stmt in [x.strip() for x in CREATE_SQL.split(";") if x.strip()]:
+                for stmt in [s.strip() for s in CREATE_SQL.split(";") if s.strip()]:
                     await cur.execute(stmt)
             await con.commit()
-        logging.info("🗄️ Tablas creadas/verificadas correctamente.")
+        logging.info("🗄️ Esquema verificado.")
 
-    async def exec(self, query, *params):
+    async def exec(self, query: str, *params):
         async with await psycopg.AsyncConnection.connect(self.url) as con:
             async with con.cursor() as cur:
                 await cur.execute(query.replace("?", "%s"), params)
             await con.commit()
 
-    async def one(self, query, *params):
+    async def one(self, query: str, *params):
         async with await psycopg.AsyncConnection.connect(self.url) as con:
             con.row_factory = dict_row
             async with con.cursor() as cur:
                 await cur.execute(query.replace("?", "%s"), params)
                 return await cur.fetchone()
 
-    async def all(self, query, *params):
+    async def all(self, query: str, *params):
         async with await psycopg.AsyncConnection.connect(self.url) as con:
             con.row_factory = dict_row
             async with con.cursor() as cur:
