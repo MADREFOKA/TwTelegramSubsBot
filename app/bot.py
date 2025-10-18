@@ -9,7 +9,7 @@ import traceback
 
 from datetime import datetime, timezone
 from aiohttp import web
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, ChatMemberHandler
 from telegram import Update
 from telegram.error import TelegramError
 
@@ -146,8 +146,11 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("priv_add", self.auditor.cmd_priv_add))
         app.add_handler(CommandHandler("priv_remove", self.auditor.cmd_priv_remove))
         app.add_handler(CommandHandler("priv_list", self.auditor.cmd_priv_list))
-        app.add_error_handler(self.global_error_handler)
+        app.add_handler(ChatMemberHandler(self.auditor.on_member_update, chat_member_types=["member", "administrator", "left", "kicked"]))
+        self.auditor.schedule_weekly_audit(app.job_queue)
 
+        app.add_error_handler(self.global_error_handler)
+        
         webhook_url = f"{self.cfg.base_url}/webhook"
         try:
             r = requests.get(
