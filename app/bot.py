@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from aiohttp import web
 from telegram.ext import ApplicationBuilder, CommandHandler, ChatMemberHandler
 from telegram import Update
+from jinja2 import Environment, FileSystemLoader
 
 from app.db import Database
 from app.security import TokenCipher
@@ -39,7 +40,10 @@ class TwitchSubBot:
 
         # Componentes principales
         self.cmds = Commands(self.db, self.cfg, self.cipher)
-        self.oauth = OAuthHandlers(self.cfg, self.db, self.send_tg, self.refresh_twitch_token, self.days_until, self.cipher)
+        self.oauth = OAuthHandlers(
+            self.cfg, self.db, self.send_tg,
+            self.refresh_twitch_token, self.days_until, self.cipher
+        )
         self.auditor = Auditor(self.db, self.cfg, self.send_tg, self.refresh_twitch_token)
 
     # ----------------------------------------------------------------------
@@ -176,16 +180,46 @@ class TwitchSubBot:
         web_app = web.Application()
         web_app["bot"] = app
 
+        # --- Dashboard HTML ---
+        templates = Environment(loader=FileSystemLoader("app/templates"))
+
+        async def dashboard_page(request):
+            slug = request.match_info.get("slug")
+            if not slug:
+                return web.Response(text="❌ Falta el nombre del streamer.", status=400)
+
+            b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
+            if not b:
+                return web.Response(text="❌ Streamer no encontrado.", status=404)
+
+            logs = await self.db.all("""
+                SELECT etiqueta_semana, total_miembros, expulsados, sin_vinculo, fallos, fecha_auditoria
+                FROM audit_logs
+                WHERE streamer_slug=%s
+                ORDER BY fecha_auditoria DESC
+                LIMIT 20
+            """, slug)
+
+            template = templates.get_template("dashboard.html")
+            html = template.render(
+                slug=slug,
+                logs=logs,
+                total_audits=len(logs)
+            )
+            return web.Response(text=html, content_type="text/html")
+
+        # Rutas web
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
         web_app.router.add_get("/twitch/callback", self.oauth.twitch_callback_user)
         web_app.router.add_get("/twitch/redirect", self.oauth.twitch_callback_user)
+        web_app.router.add_get("/dashboard/{slug}", dashboard_page)
         web_app.router.add_get("/ping", lambda _: web.Response(text="🏓 Pong!"))
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
+        # Iniciar servidor y bot
         runner = web.AppRunner(web_app)
         await runner.setup()
-
         site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
         await site.start()
 
@@ -194,6 +228,6 @@ class TwitchSubBot:
         logging.info("💜 Bot y servidor web iniciados correctamente.")
         logging.info("💫 Esperando eventos de Telegram y Twitch...")
 
-        # 🔧 Pausa breve para que Render detecte el puerto correctamente
+        # 🔧 Espera breve para que Render detecte el puerto abierto
         await asyncio.sleep(1)
         await asyncio.Event().wait()
