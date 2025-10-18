@@ -2,20 +2,14 @@
 import time
 import logging
 import requests
+import secrets
 from aiohttp import web
 
 from app.utils.messages import setup_success, viewer_is_owner, viewer_is_sub, viewer_not_sub
 
+
 class OAuthHandlers:
     def __init__(self, config, db, send_tg, refresh_twitch_token, days_until, cipher):
-        """
-        config: objeto con client_id, client_secret, base_url, bot_username, TW_API, TW_TOKEN
-        db: instancia Database
-        send_tg: fn async(chat_id, text, html=True/False)
-        refresh_twitch_token: fn async(broadcaster_row)->access_token
-        days_until: fn(str)->(str,int)
-        cipher: TokenCipher (encrypt/decrypt) - se usará en fase 2
-        """
         self.cfg = config
         self.db = db
         self.send_tg = send_tg
@@ -23,6 +17,9 @@ class OAuthHandlers:
         self.days_until = days_until
         self.cipher = cipher
 
+    # ----------------------------------------------------------------------
+    # CALLBACK DEL STREAMER (SETUP)
+    # ----------------------------------------------------------------------
     async def twitch_callback_setup(self, request: web.Request):
         try:
             q = request.rel_url.query
@@ -34,7 +31,6 @@ class OAuthHandlers:
             if not row:
                 return web.Response(text="❌ Estado inválido.", status=400)
 
-            # Intercambia code por token
             data = requests.post(self.cfg.TW_TOKEN, data={
                 "client_id": self.cfg.client_id,
                 "client_secret": self.cfg.client_secret,
@@ -42,6 +38,7 @@ class OAuthHandlers:
                 "grant_type": "authorization_code",
                 "redirect_uri": f"{self.cfg.base_url}/twitch/setup/callback"
             }, timeout=15).json()
+
             if "access_token" not in data:
                 return web.Response(text=f"Error token: {data}", status=400)
 
@@ -53,23 +50,26 @@ class OAuthHandlers:
             me = requests.get(f"{self.cfg.TW_API}/users", headers=headers, timeout=15).json()["data"][0]
             slug = me["login"].lower()
 
-            # (fase 2: cifrar aquí con cipher.encrypt)
             enc_access = access_token
             enc_refresh = refresh_token
 
+            # Generar token único de dashboard
+            dashboard_token = secrets.token_urlsafe(32)
+
             await self.db.exec("""
                 INSERT INTO broadcasters(broadcaster_id, owner_telegram_id, access_token, refresh_token,
-                                         token_obtained_at, token_expires_in, slug)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                                         token_obtained_at, token_expires_in, slug, dashboard_token)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (broadcaster_id)
                 DO UPDATE SET access_token=EXCLUDED.access_token,
                               refresh_token=EXCLUDED.refresh_token,
                               token_obtained_at=EXCLUDED.token_obtained_at,
                               token_expires_in=EXCLUDED.token_expires_in,
-                              slug=EXCLUDED.slug
-            """, me["id"], row["telegram_id"], enc_access, enc_refresh, int(time.time()), expires_in, slug)
+                              slug=EXCLUDED.slug,
+                              dashboard_token=EXCLUDED.dashboard_token
+            """, me["id"], row["telegram_id"], enc_access, enc_refresh, int(time.time()), expires_in, slug, dashboard_token)
 
-            msg = setup_success(me["display_name"], self.cfg.bot_username, slug)
+            msg = setup_success(me["display_name"], self.cfg.bot_username, slug, self.cfg.base_url, dashboard_token)
             await self.send_tg(row["telegram_id"], msg, html=True)
 
             return web.Response(
@@ -81,6 +81,9 @@ class OAuthHandlers:
             logging.exception("Error en twitch_callback_setup:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
 
+    # ----------------------------------------------------------------------
+    # CALLBACK DEL VIEWER (START)
+    # ----------------------------------------------------------------------
     async def twitch_callback_user(self, request: web.Request):
         try:
             q = request.rel_url.query
@@ -99,6 +102,7 @@ class OAuthHandlers:
                 "code": code,
                 "redirect_uri": f"{self.cfg.base_url}/twitch/callback"
             }, timeout=15).json()
+
             if "access_token" not in data:
                 return web.Response(text=f"Error al obtener token: {data}", status=400)
 
@@ -116,7 +120,6 @@ class OAuthHandlers:
             if not b:
                 return web.Response(text="Streamer no encontrado.", status=400)
 
-            # fase 2: descifrar si corresponde
             b_access = await self.refresh_twitch_token(b)
             headers_b = {"Authorization": f"Bearer {b_access}", "Client-Id": self.cfg.client_id}
 
