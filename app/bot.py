@@ -245,14 +245,20 @@ class TwitchSubBot:
     # CALLBACKS TWITCH (setup + viewer)
     # -------------------------------
     async def twitch_callback_setup(self, request: web.Request):
+        """Callback OAuth cuando un streamer hace /setup"""
         try:
             params = request.rel_url.query
             code, state = params.get("code"), params.get("state")
             if not code or not state:
-                return web.Response(text="❌ Falta code/state.", status=400)
-            row = await self.db.one("SELECT * FROM oauth_states WHERE state=%s AND purpose='broadcaster_setup'", state)
+                return web.Response(text="❌ Falta código o estado.", status=400)
+    
+            row = await self.db.one(
+                "SELECT * FROM oauth_states WHERE state=%s AND purpose='broadcaster_setup'",
+                state
+            )
             if not row:
-                return web.Response(text="❌ Estado inválido.", status=400)
+                return web.Response(text="❌ Estado no válido o expirado.", status=400)
+    
             payload = {
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
@@ -260,37 +266,70 @@ class TwitchSubBot:
                 "grant_type": "authorization_code",
                 "redirect_uri": f"{self.base_url}/twitch/setup/callback"
             }
+    
             data = requests.post(self.TW_TOKEN, data=payload, timeout=15).json()
             if "access_token" not in data:
-                return web.Response(text=f"Error token: {data}", status=400)
-            headers = {"Authorization": f"Bearer {data['access_token']}", "Client-Id": self.client_id}
+                return web.Response(text=f"❌ Error al obtener token: {data}", status=400)
+    
+            access_token = data["access_token"]
+            refresh_token = data.get("refresh_token")
+            expires_in = data.get("expires_in", 0)
+            token_time = int(time.time())
+    
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Client-Id": self.client_id
+            }
             me = requests.get(f"{self.TW_API}/users", headers=headers, timeout=15).json()["data"][0]
             slug = me["login"].lower()
+    
             await self.db.exec("""
                 INSERT INTO broadcasters(broadcaster_id, owner_telegram_id, access_token, refresh_token,
                                          token_obtained_at, token_expires_in, slug)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(broadcaster_id)
-                DO UPDATE SET access_token=EXCLUDED.access_token, refresh_token=EXCLUDED.refresh_token,
-                              token_obtained_at=EXCLUDED.token_obtained_at, token_expires_in=EXCLUDED.token_expires_in,
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (broadcaster_id)
+                DO UPDATE SET access_token=EXCLUDED.access_token,
+                              refresh_token=EXCLUDED.refresh_token,
+                              token_obtained_at=EXCLUDED.token_obtained_at,
+                              token_expires_in=EXCLUDED.token_expires_in,
                               slug=EXCLUDED.slug
-            """, me["id"], row["telegram_id"], data["access_token"], data.get("refresh_token"),
-               int(time.time()), data.get("expires_in", 0), slug)
+            """, me["id"], row["telegram_id"], access_token, refresh_token, token_time, expires_in, slug)
+    
             bot_link = f"https://t.me/{self.bot_username}?start={slug}"
-            await self.send_tg(row["telegram_id"], f"✅ Canal vinculado.\nEnlace viewers:\n{bot_link}")
-            return web.Response(text="✅ Vinculación completada.", status=200)
+            msg = (
+                f"✅ *Canal vinculado correctamente.*\n\n"
+                f"🎥 Canal: *{me['display_name']}*\n"
+                f"🔗 Enlace para tus viewers:\n{bot_link}\n\n"
+                f"Para usar el bot en tus grupos:\n"
+                f"• Usa /setgroup en tu grupo premium.\n"
+                f"• Usa /setfreegroup en tu grupo gratuito.\n\n"
+                f"Comandos de gestión:\n"
+                f"🧹 /auditfull — limpia no-suscriptores\n"
+                f"⭐ /privilege_add /privilege_remove /privilege_list — gestiona excepciones VIP."
+            )
+            await self.send_tg(row["telegram_id"], msg, markdown=True)
+    
+            # 🔁 Redirige de vuelta al bot de Telegram (sin mostrar página)
+            raise web.HTTPFound(location=f"tg://resolve?domain={self.bot_username}")
+    
         except Exception as e:
+            logging.exception("Error en twitch_callback_setup:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
 
     async def twitch_callback_user(self, request: web.Request):
+        """Callback OAuth cuando un viewer se vincula"""
         try:
             params = request.rel_url.query
             code, state = params.get("code"), params.get("state")
             if not code or not state:
-                return web.Response(text="❌ Falta parámetros.", status=400)
-            row = await self.db.one("SELECT * FROM oauth_states WHERE state=%s AND purpose='user_link'", state)
+                return web.Response(text="❌ Falta código o estado.", status=400)
+    
+            row = await self.db.one(
+                "SELECT * FROM oauth_states WHERE state=%s AND purpose='user_link'", state
+            )
             if not row:
-                return web.Response(text="❌ Estado inválido.", status=400)
+                return web.Response(text="❌ Estado no válido o expirado.", status=400)
+    
             payload = {
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
@@ -298,37 +337,63 @@ class TwitchSubBot:
                 "code": code,
                 "redirect_uri": f"{self.base_url}/twitch/callback"
             }
+    
             data = requests.post(self.TW_TOKEN, data=payload, timeout=15).json()
             if "access_token" not in data:
-                return web.Response(text=f"Error al obtener token: {data}", status=400)
+                return web.Response(text=f"❌ Error al obtener token: {data}", status=400)
+    
             access_token = data["access_token"]
             headers_user = {"Authorization": f"Bearer {access_token}", "Client-Id": self.client_id}
             me = requests.get(f"{self.TW_API}/users", headers=headers_user, timeout=15).json()["data"][0]
+    
+            # Guarda o actualiza al usuario en BD
             await self.db.exec("""
                 INSERT INTO telegram_users(telegram_id, username, linked_twitch_id)
-                VALUES (%s,%s,%s)
-                ON CONFLICT(telegram_id) DO UPDATE SET username=EXCLUDED.username, linked_twitch_id=EXCLUDED.linked_twitch_id
+                VALUES (%s, %s, %s)
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET username=EXCLUDED.username, linked_twitch_id=EXCLUDED.linked_twitch_id
             """, row["telegram_id"], me["login"], me["id"])
+    
             b = await self.db.one("SELECT * FROM broadcasters WHERE broadcaster_id=%s", row["broadcaster_id"])
             if not b:
-                return web.Response(text="Streamer no encontrado.", status=400)
+                return web.Response(text="❌ Canal no encontrado.", status=400)
+    
+            b["access_token"] = await self.refresh_twitch_token(b)
             headers_b = {"Authorization": f"Bearer {b['access_token']}", "Client-Id": self.client_id}
-            r = requests.get(f"{self.TW_API}/subscriptions/user",
-                             headers=headers_b,
-                             params={"broadcaster_id": b["broadcaster_id"], "user_id": me["id"]},
-                             timeout=15)
-            data_sub = r.json().get("data")
-            if data_sub:
-                msg = f"💜 *{me['display_name']}*, eres sub de *{b['slug']}* 🎟️\n{b.get('invite_link','')}"
+    
+            # Comprueba si el usuario es sub o el propietario del canal
+            r = requests.get(
+                f"{self.TW_API}/subscriptions/user",
+                headers=headers_b,
+                params={"broadcaster_id": b["broadcaster_id"], "user_id": me["id"]},
+                timeout=15
+            )
+            data_subs = r.json().get("data")
+    
+            if r.status_code == 200 and data_subs:
+                msg = (
+                    f"💜 *{me['display_name']}*, eres sub de *{b['slug']}* 🎟️\n\n"
+                    f"🔗 Grupo premium:\n{b.get('invite_link', '—')}"
+                )
+            elif me["id"] == b["broadcaster_id"]:
+                msg = (
+                    f"👑 *{me['display_name']}*, eres el propietario de *{b['slug']}* 🎟️\n\n"
+                    f"Acceso automático al grupo premium:\n{b.get('invite_link', '—')}"
+                )
             else:
-                msg = f"😔 *{me['display_name']}*, no apareces como sub de *{b['slug']}*."
-                if b.get('free_invite_link'):
-                    msg += f"\nGrupo gratuito:\n{b['free_invite_link']}"
-            await self.send_tg(row["telegram_id"], msg, md=True)
-            return web.Response(text="✅ Vinculación completada.", status=200)
+                msg = (
+                    f"😔 *{me['display_name']}*, no apareces como sub de *{b['slug']}*.\n\n"
+                    f"💬 Puedes unirte al grupo gratuito aquí:\n{b.get('free_invite_link', '—')}"
+                )
+    
+            await self.send_tg(row["telegram_id"], msg, markdown=True)
+    
+            raise web.HTTPFound(location=f"tg://resolve?domain={self.bot_username}")
+    
         except Exception as e:
+            logging.exception("Error en twitch_callback_user:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
-
+            
     # -------------------------------
     # INICIO Y WEBHOOKS
     # -------------------------------
