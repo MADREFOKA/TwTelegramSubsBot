@@ -1,22 +1,26 @@
 # app/utils/messages.py
+def setup_success(display_name: str, bot_username: str, slug: str, base_url: str | None = None, dashboard_token: str | None = None) -> str:
+    dashboard_section = ""
+    if base_url and dashboard_token:
+        dashboard_section = (
+            "\n\n📊 <b>Dashboard privado:</b>\n"
+            f"{base_url}/dashboard/{slug}?token={dashboard_token}"
+        )
 
-def setup_success(display_name: str, bot_username: str, slug: str) -> str:
     return (
         "✅ <b>Canal vinculado correctamente</b>\n\n"
         f"🎥 Canal: <b>{display_name}</b>\n"
-        f"🔗 Enlace viewers:\nhttps://t.me/{bot_username}?start={slug}\n\n"
+        f"🔗 Enlace viewers:\nhttps://t.me/{bot_username}?start={slug}\n"
+        f"{dashboard_section}\n\n"
         "⚙️ <b>Configuración:</b>\n"
         "<code>/setgroup</code> – Vincula grupo premium\n"
         "<code>/setfreegroup</code> – Vincula grupo gratuito\n"
-        "<code>/auditnow</code> – Limpia no-suscriptores manualmente\n"
+        "<code>/auditnow</code> – Limpia no-suscriptores\n"
         "<code>/priv_add @usuario</code> – Añade a whitelist\n"
         "<code>/priv_remove @usuario</code> – Quita de whitelist\n"
-        "<code>/priv_list</code> – Lista whitelist\n\n"
-        "💜 <b>Dashboard privado:</b>\n"
-        f"📊 Puedes ver tus estadísticas en:\n"
-        f"https://twtelegramsubsbot.onrender.com/dashboard/{slug}\n\n"
+        "<code>/priv_list</code> – Lista whitelist\n"
+        "<code>/regendashlink</code> – Regenera enlace dashboard\n"
     )
-
 
 def viewer_is_owner(user: str, streamer: str, invite: str | None) -> str:
     if invite:
