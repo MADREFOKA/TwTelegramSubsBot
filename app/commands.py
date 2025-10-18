@@ -1,3 +1,4 @@
+# app/commands.py
 import time
 import logging
 import requests
@@ -5,6 +6,8 @@ import asyncio
 from urllib.parse import quote
 from telegram import Update
 from telegram.ext import ContextTypes
+
+from app.utils.safe_exec import safe_execute  # ✅ nuevo decorador de seguridad
 
 
 class Commands:
@@ -44,6 +47,7 @@ class Commands:
     # ---------------------------
     # /SETUP — STREAMER
     # ---------------------------
+    @safe_execute()
     async def cmd_setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /setup — inicia el vínculo del streamer"""
         if update.effective_chat.type != "private":
@@ -69,6 +73,7 @@ class Commands:
     # ---------------------------
     # /START — VIEWER
     # ---------------------------
+    @safe_execute()
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /start — para los viewers que se vinculan"""
         if update.effective_chat.type != "private":
@@ -102,6 +107,7 @@ class Commands:
     # ---------------------------
     # /SETGROUP — STREAMER
     # ---------------------------
+    @safe_execute()
     async def cmd_setgroup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Vincula grupo premium del streamer"""
         if update.effective_chat.type not in ("group", "supergroup"):
@@ -124,6 +130,7 @@ class Commands:
     # ---------------------------
     # /SETFREEGROUP — STREAMER
     # ---------------------------
+    @safe_execute()
     async def cmd_setfreegroup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Vincula grupo gratuito del streamer"""
         if update.effective_chat.type not in ("group", "supergroup"):
@@ -142,15 +149,9 @@ class Commands:
         await update.message.reply_text("✅ Grupo gratuito vinculado correctamente.")
 
     # ---------------------------
-    # AUXILIAR
-    # ---------------------------
-    def _gen_state(self, n=32):
-        import secrets, string
-        return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
-
-    # ---------------------------
     # /REGENDASHLINK — STREAMER
     # ---------------------------
+    @safe_execute()
     async def cmd_regendashlink(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Permite al streamer regenerar su enlace privado del dashboard."""
         if update.effective_chat.type != "private":
@@ -177,3 +178,9 @@ class Commands:
         )
         await self.send_tg(user.id, msg, html=True)
 
+    # ---------------------------
+    # AUXILIAR
+    # ---------------------------
+    def _gen_state(self, n=32):
+        import secrets, string
+        return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
