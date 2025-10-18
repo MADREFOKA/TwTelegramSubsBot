@@ -8,11 +8,15 @@ def setup_success(display_name: str, bot_username: str, slug: str) -> str:
         "⚙️ <b>Configuración:</b>\n"
         "<code>/setgroup</code> – Vincula grupo premium\n"
         "<code>/setfreegroup</code> – Vincula grupo gratuito\n"
-        "<code>/auditnow</code> – Limpia no-suscriptores\n"
+        "<code>/auditnow</code> – Limpia no-suscriptores manualmente\n"
         "<code>/priv_add @usuario</code> – Añade a whitelist\n"
         "<code>/priv_remove @usuario</code> – Quita de whitelist\n"
-        "<code>/priv_list</code> – Lista whitelist\n"
+        "<code>/priv_list</code> – Lista whitelist\n\n"
+        "💜 <b>Dashboard privado:</b>\n"
+        f"📊 Puedes ver tus estadísticas en:\n"
+        f"https://twtelegramsubsbot.onrender.com/dashboard/{slug}\n\n"
     )
+
 
 def viewer_is_owner(user: str, streamer: str, invite: str | None) -> str:
     if invite:
@@ -25,6 +29,7 @@ def viewer_is_owner(user: str, streamer: str, invite: str | None) -> str:
         "Aún no has vinculado tu grupo premium. Usa <code>/setgroup</code> en el grupo."
     )
 
+
 def viewer_is_sub(user: str, streamer: str, renew: str, days_left: int, invite: str | None) -> str:
     plural = "s" if days_left != 1 else ""
     base = (
@@ -36,6 +41,7 @@ def viewer_is_sub(user: str, streamer: str, renew: str, days_left: int, invite: 
         return base + f"Aquí tienes el grupo de subs:\n{invite}"
     return base + "El streamer aún no ha vinculado su grupo de subs."
 
+
 def viewer_not_sub(user: str, streamer: str, free_link: str | None) -> str:
     msg = (
         f"😔 <b>{user}</b>, no apareces como suscriptor de <b>{streamer}</b>.\n\n"
@@ -45,6 +51,7 @@ def viewer_not_sub(user: str, streamer: str, free_link: str | None) -> str:
     if free_link:
         msg += f"🎟️ Aquí tienes el grupo gratuito:\n{free_link}"
     return msg
+
 
 def group_premium_linked(bot_username: str, slug: str) -> str:
     return (
