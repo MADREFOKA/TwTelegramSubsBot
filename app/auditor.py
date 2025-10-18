@@ -2,6 +2,7 @@
 import logging
 import asyncio
 import requests
+import time
 from datetime import time as dtime
 from telegram import Update
 from telegram.ext import ContextTypes, JobQueue
@@ -21,10 +22,42 @@ class Auditor:
         self.refresh_twitch_token = refresh_twitch_token
 
     # ---------------------------------------------------------------------
+    # REGISTRO DE MIEMBROS EN GRUPO (alta/baja)
+    # ---------------------------------------------------------------------
+    async def on_member_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Guarda en la base de datos cuando un usuario entra o sale del grupo."""
+        try:
+            data = update.chat_member
+            chat = data.chat
+            user = data.new_chat_member.user
+            status = data.new_chat_member.status
+
+            b = await self.db.one("SELECT broadcaster_id FROM broadcasters WHERE group_id=%s", chat.id)
+            if not b:
+                return  # grupo no vinculado, ignorar
+
+            if status in ("member", "administrator"):
+                await self.db.exec(
+                    "INSERT INTO group_members (group_id, telegram_id, username, joined_at) "
+                    "VALUES (%s,%s,%s,%s) ON CONFLICT (group_id, telegram_id) DO UPDATE SET username=EXCLUDED.username",
+                    chat.id, user.id, user.username, int(time.time())
+                )
+                logging.info(f"👤 {user.username} añadido al registro de {chat.id}")
+            elif status in ("left", "kicked"):
+                await self.db.exec(
+                    "DELETE FROM group_members WHERE group_id=%s AND telegram_id=%s",
+                    chat.id, user.id
+                )
+                logging.info(f"👋 {user.username} eliminado del registro de {chat.id}")
+
+        except Exception as e:
+            logging.warning(f"Error procesando cambio de miembro: {e}")
+
+    # ---------------------------------------------------------------------
     # AUDITORÍA MANUAL — /auditnow
     # ---------------------------------------------------------------------
     async def cmd_auditnow(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Auditoría manual, incluye expulsión de usuarios sin vincular."""
+        """Auditoría manual para limpieza inmediata."""
         user = update.effective_user
         chat = update.effective_chat
         if chat.type not in ("group", "supergroup"):
@@ -42,7 +75,7 @@ class Auditor:
         stats = await self._run_audit(context, b, chat.id)
         msg = (
             f"✅ Auditoría completada.\n"
-            f"👥 Miembros revisados: {stats['checked']}\n"
+            f"👥 Revisados: {stats['checked']}\n"
             f"🚫 Expulsados: {stats['kicked']}\n"
             f"⚙️ Sin vincular: {stats['no_link']}\n"
             f"⚠️ Fallos: {stats['failed']}"
@@ -50,20 +83,20 @@ class Auditor:
         await update.message.reply_text(msg)
 
     # ---------------------------------------------------------------------
-    # AUDITORÍA AUTOMÁTICA (cada lunes a las 9:00)
+    # AUDITORÍA AUTOMÁTICA — Lunes 09:00
     # ---------------------------------------------------------------------
     def schedule_weekly_audit(self, job_queue: JobQueue):
         """Programa la auditoría silenciosa cada lunes a las 9:00 AM (Europe/Madrid)."""
         job_queue.run_daily(
             self._audit_all_streamers,
             time=dtime(hour=9, minute=0),
-            days=(0,),  # 0 = Lunes
+            days=(0,),  # 0 = lunes
             name="weekly_audit"
         )
         logging.info("📆 Auditoría semanal programada: lunes 09:00 (Europe/Madrid)")
 
     async def _audit_all_streamers(self, context: ContextTypes.DEFAULT_TYPE):
-        """Ejecuta auditoría para todos los streamers registrados (sin enviar mensajes)."""
+        """Ejecuta auditoría silenciosa de todos los grupos vinculados."""
         streamers = await self.db.all("SELECT * FROM broadcasters WHERE group_id IS NOT NULL")
         logging.info(f"🧹 Iniciando auditoría automática de {len(streamers)} streamers...")
 
@@ -77,15 +110,18 @@ class Auditor:
         logging.info("✅ Auditoría semanal completada.")
 
     # ---------------------------------------------------------------------
-    # LÓGICA PRINCIPAL DE AUDITORÍA
+    # LÓGICA PRINCIPAL DE AUDITORÍA (con batches de 100 usuarios)
     # ---------------------------------------------------------------------
     async def _run_audit(self, context, b, group_id, silent=False):
-        """Lógica compartida entre /auditnow y auditoría programada."""
         stats = {"checked": 0, "kicked": 0, "failed": 0, "no_link": 0}
-
         try:
-            members = await context.bot.get_chat_administrators(group_id)
-            all_members = [m.user for m in members if not m.user.is_bot]
+            members = await self.db.all(
+                "SELECT telegram_id, username FROM group_members WHERE group_id=%s",
+                group_id
+            )
+            if not members:
+                logging.info(f"🔸 No hay miembros registrados en grupo {group_id}")
+                return stats
 
             access_token = await self.refresh_twitch_token(b)
             headers = {"Authorization": f"Bearer {access_token}", "Client-Id": self.cfg.client_id}
@@ -96,58 +132,72 @@ class Auditor:
             )
             whitelist = [p["username"].lower().lstrip("@") for p in whitelist_rows]
 
-            for member in all_members:
-                username = (member.username or "").lower()
-                stats["checked"] += 1
+            batch_size = 100
+            for i in range(0, len(members), batch_size):
+                batch = members[i:i+batch_size]
+                user_ids = []
+                telegram_map = {}
 
-                # Saltar propietario o privilegiados
-                if username in whitelist or username == (b.get("slug") or "").lower():
+                # Recolectamos usuarios vinculados
+                for row in batch:
+                    member_id = row["telegram_id"]
+                    username = (row["username"] or "").lower()
+                    stats["checked"] += 1
+
+                    if username in whitelist:
+                        continue
+
+                    link_row = await self.db.one(
+                        "SELECT linked_twitch_id FROM telegram_users WHERE telegram_id=%s",
+                        member_id
+                    )
+                    if link_row and link_row["linked_twitch_id"]:
+                        twitch_id = link_row["linked_twitch_id"]
+                        user_ids.append(twitch_id)
+                        telegram_map[twitch_id] = (member_id, username)
+                    else:
+                        stats["no_link"] += 1
+                        try:
+                            await context.bot.ban_chat_member(group_id, member_id)
+                            stats["kicked"] += 1
+                        except Exception:
+                            stats["failed"] += 1
+
+                if not user_ids:
                     continue
 
-                row = await self.db.one(
-                    "SELECT linked_twitch_id FROM telegram_users WHERE telegram_id=%s",
-                    member.id
-                )
-
-                # Si no tiene vínculo con Twitch
-                if not row or not row.get("linked_twitch_id"):
-                    stats["no_link"] += 1
-                    try:
-                        await context.bot.ban_chat_member(group_id, member.id)
-                        stats["kicked"] += 1
-                    except Exception as e:
-                        logging.warning(f"No se pudo expulsar {username}: {e}")
-                        stats["failed"] += 1
-                    continue
-
-                twitch_id = row["linked_twitch_id"]
+                # Consulta batch (hasta 100 usuarios)
+                params = [("user_id", uid) for uid in user_ids]
+                params.append(("broadcaster_id", b["broadcaster_id"]))
 
                 try:
                     r = requests.get(
-                        f"{self.cfg.TW_API}/subscriptions/user",
+                        f"{self.cfg.TW_API}/subscriptions",
                         headers=headers,
-                        params={"broadcaster_id": b["broadcaster_id"], "user_id": twitch_id},
-                        timeout=10
+                        params=params,
+                        timeout=15
                     )
-                    data = r.json().get("data", [])
-                    if not data:
-                        await context.bot.ban_chat_member(group_id, member.id)
-                        stats["kicked"] += 1
-                    await asyncio.sleep(1)
+                    subs = r.json().get("data", [])
+                    subbed_ids = {s["user_id"] for s in subs}
+
+                    for uid in user_ids:
+                        member_id, username = telegram_map[uid]
+                        if uid not in subbed_ids:
+                            await context.bot.ban_chat_member(group_id, member_id)
+                            stats["kicked"] += 1
+                    await asyncio.sleep(2)
                 except Exception as e:
-                    logging.warning(f"Error verificando sub de {username}: {e}")
-                    stats["failed"] += 1
+                    logging.warning(f"Error batch Twitch API: {e}")
 
         except Exception as e:
             logging.error(f"Error general auditando {b.get('slug')}: {e}")
 
         if not silent:
             logging.info(f"Auditoría {b.get('slug')} → {stats}")
-
         return stats
 
     # ---------------------------------------------------------------------
-    # PRIVILEGIOS (whitelist)
+    # PRIVILEGIOS — /priv_add /priv_remove /priv_list
     # ---------------------------------------------------------------------
     async def cmd_priv_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
