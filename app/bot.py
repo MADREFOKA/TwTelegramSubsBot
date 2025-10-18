@@ -16,6 +16,7 @@ from app.security import TokenCipher
 from app.commands import Commands
 from app.oauth import OAuthHandlers
 from app.auditor import Auditor
+from app.dashboard import Dashboard
 
 
 class Config:
@@ -218,7 +219,13 @@ class TwitchSubBot:
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
         web_app.router.add_get("/twitch/callback", self.oauth.twitch_callback_user)
-        web_app.router.add_get("/dashboard/{slug}", dashboard_page)
+        
+        # Dashboard visual
+        from app.dashboard import Dashboard
+        self.dashboard = Dashboard(self.db)
+        web_app.router.add_get("/dashboard/{slug}", self.dashboard.page)
+        
+        # Rutas básicas
         web_app.router.add_get("/ping", lambda _: web.Response(text="🏓 Pong!"))
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
