@@ -5,10 +5,13 @@ import logging
 import asyncio
 import requests
 import aiohttp
+import traceback
+
 from datetime import datetime, timezone
 from aiohttp import web
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telegram import Update
+from telegram.error import TelegramError
 
 from app.db import Database
 from app.security import TokenCipher
@@ -35,6 +38,19 @@ class TwitchSubBot:
         self.app = None
         self.cmds = Commands(self.db, self.cfg, self.cipher)
         self.oauth = OAuthHandlers(self.cfg, self.db, self.send_tg, self.refresh_twitch_token, self.days_until, self.cipher)
+
+    async def global_error_handler(self, update, context):
+        """Captura y registra errores de comandos Telegram."""
+        err_msg = f"⚠️ Error inesperado en comando: {context.error}"
+        logging.error(err_msg)
+        logging.error(traceback.format_exc())
+        try:
+            if update and update.effective_message:
+                await update.effective_message.reply_text(
+                    "⚠️ Ha ocurrido un error interno. Intenta de nuevo en unos segundos."
+                )
+        except Exception:
+            pass
 
     # -------- utilidades compartidas
     async def send_tg(self, chat_id, text, md=False, html=False):
@@ -124,6 +140,7 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("start", self.cmds.cmd_start))
         app.add_handler(CommandHandler("setgroup", self.cmds.cmd_setgroup))
         app.add_handler(CommandHandler("setfreegroup", self.cmds.cmd_setfreegroup))
+        app.add_error_handler(self.global_error_handler)
 
         webhook_url = f"{self.cfg.base_url}/webhook"
         try:
