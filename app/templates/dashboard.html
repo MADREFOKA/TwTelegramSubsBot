@@ -1,59 +1,178 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <title>Dashboard de {{ slug }}</title>
-    <style>
-        body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; }
-        header { background-color: #6441a5; color: white; padding: 1rem 2rem; }
-        h1 { margin: 0; font-size: 1.6rem; }
-        table { width: 90%; margin: 2rem auto; border-collapse: collapse; background: white; border-radius: 10px; overflow: hidden; }
-        th, td { padding: 0.8rem 1rem; border-bottom: 1px solid #ddd; text-align: center; }
-        th { background-color: #7551cc; color: white; }
-        tr:hover { background-color: #f1f1f1; }
-        .container { width: 100%; display: flex; justify-content: center; align-items: center; }
-        .chart { width: 90%; margin: 2rem auto; }
-        footer { text-align: center; font-size: 0.9rem; color: #666; margin-bottom: 2rem; }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard de {{ slug }}</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background-color: #f2f2f7;
+      color: #222;
+    }
+    header {
+      background: linear-gradient(90deg, #6441a5, #9146ff);
+      color: #fff;
+      padding: 1.5rem 2rem;
+      text-align: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.8rem;
+      font-weight: 600;
+    }
+    .summary {
+      margin: 2rem auto;
+      max-width: 900px;
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      padding: 1rem 2rem;
+      text-align: center;
+    }
+    .summary p {
+      margin: 0.3rem 0;
+      font-size: 1rem;
+    }
+    table {
+      width: 90%;
+      margin: 2rem auto;
+      border-collapse: collapse;
+      background: white;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    th, td {
+      padding: 0.8rem 1rem;
+      border-bottom: 1px solid #eee;
+      text-align: center;
+      font-size: 0.95rem;
+    }
+    th {
+      background-color: #7551cc;
+      color: white;
+    }
+    tr:hover {
+      background-color: #f7f7f7;
+    }
+    .chart-container {
+      width: 90%;
+      max-width: 1000px;
+      margin: 3rem auto;
+      background: #fff;
+      border-radius: 10px;
+      padding: 1rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    canvas {
+      width: 100%;
+      height: 400px;
+    }
+    footer {
+      text-align: center;
+      font-size: 0.85rem;
+      color: #555;
+      margin: 2rem 0 3rem;
+    }
+  </style>
 </head>
 <body>
-    <header>
-        <h1>📊 Estadísticas de {{ slug }}</h1>
-    </header>
+  <header>
+    <h1>📊 Estadísticas de {{ slug }}</h1>
+  </header>
 
-    <div class="container">
-        {% if logs %}
-        <table>
-            <thead>
-                <tr>
-                    <th>Semana</th>
-                    <th>Miembros</th>
-                    <th>Expulsados</th>
-                    <th>Sin vínculo</th>
-                    <th>Fallos</th>
-                    <th>Fecha</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for log in logs %}
-                <tr>
-                    <td>{{ log.etiqueta_semana }}</td>
-                    <td>{{ log.total_miembros }}</td>
-                    <td>{{ log.expulsados }}</td>
-                    <td>{{ log.sin_vinculo }}</td>
-                    <td>{{ log.fallos }}</td>
-                    <td>{{ log.fecha_auditoria.strftime("%d/%m/%Y %H:%M") }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <p style="text-align:center;">No hay auditorías registradas aún.</p>
-        {% endif %}
-    </div>
+  <div class="summary">
+    <p><strong>Total de auditorías:</strong> {{ total_audits }}</p>
+    {% if logs %}
+    <p><strong>Última auditoría:</strong> {{ logs[0].etiqueta_semana }}</p>
+    <p><strong>Miembros actuales:</strong> {{ logs[0].total_miembros }}</p>
+    <p><strong>Expulsados última semana:</strong> {{ logs[0].expulsados }}</p>
+    {% else %}
+    <p>No hay registros aún.</p>
+    {% endif %}
+  </div>
 
-    <footer>
-        <p>🟣 Datos actualizados desde Twitch Sub Bot — última actualización {{ logs[0].fecha_auditoria.strftime("%d/%m/%Y") if logs else "N/A" }}</p>
-    </footer>
+  {% if logs %}
+  <div class="chart-container">
+    <canvas id="auditChart"></canvas>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Semana</th>
+        <th>Miembros</th>
+        <th>Expulsados</th>
+        <th>Sin vínculo</th>
+        <th>Fallos</th>
+        <th>Fecha</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for log in logs %}
+      <tr>
+        <td>{{ log.etiqueta_semana }}</td>
+        <td>{{ log.total_miembros }}</td>
+        <td>{{ log.expulsados }}</td>
+        <td>{{ log.sin_vinculo }}</td>
+        <td>{{ log.fallos }}</td>
+        <td>{{ log.fecha_auditoria.strftime("%d/%m/%Y %H:%M") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <script>
+    const labels = {{ logs | map(attribute='etiqueta_semana') | list | tojson }};
+    const miembros = {{ logs | map(attribute='total_miembros') | list | tojson }};
+    const expulsados = {{ logs | map(attribute='expulsados') | list | tojson }};
+
+    const data = {
+      labels: labels.reverse(),
+      datasets: [
+        {
+          label: "Miembros Totales",
+          data: miembros.reverse(),
+          borderColor: "#6441A5",
+          backgroundColor: "rgba(100,65,165,0.2)",
+          fill: true,
+          tension: 0.3
+        },
+        {
+          label: "Expulsados",
+          data: expulsados.reverse(),
+          borderColor: "#E64444",
+          backgroundColor: "rgba(230,68,68,0.25)",
+          fill: true,
+          tension: 0.3
+        }
+      ]
+    };
+
+    new Chart(document.getElementById("auditChart"), {
+      type: "line",
+      data,
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: { beginAtZero: true }
+        },
+        plugins: {
+          legend: { position: "top" },
+          title: { display: true, text: "Evolución semanal de miembros y expulsados" }
+        }
+      }
+    });
+  </script>
+  {% endif %}
+
+  <footer>
+    <p>💜 Twitch Sub Bot — Datos actualizados automáticamente</p>
+  </footer>
 </body>
 </html>
