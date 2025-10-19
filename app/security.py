@@ -1,31 +1,21 @@
 # app/security.py
 import os
-from typing import Optional
+import base64
+import secrets
+from cryptography.fernet import Fernet
 
-try:
-    from cryptography.fernet import Fernet  # opcional
-except Exception:
-    Fernet = None
+FERNET_KEY = os.environ.get("FERNET_KEY")
+if not FERNET_KEY:
+    raise RuntimeError("FERNET_KEY missing in environment variables")
 
-class TokenCipher:
-    """Cifra/descifra strings si hay FERNET_KEY. Si no, hace passthrough."""
-    def __init__(self) -> None:
-        key = os.getenv("FERNET_KEY")
-        if key and Fernet:
-            self.fernet: Optional[Fernet] = Fernet(key.encode())
-        else:
-            self.fernet = None
+fernet = Fernet(FERNET_KEY)
 
-    def encrypt(self, text: str | None) -> str | None:
-        if not text:
-            return text
-        if not self.fernet:
-            return text
-        return self.fernet.encrypt(text.encode()).decode()
+def encrypt_token(s: str) -> str:
+    return fernet.encrypt(s.encode()).decode()
 
-    def decrypt(self, text: str | None) -> str | None:
-        if not text:
-            return text
-        if not self.fernet:
-            return text
-        return self.fernet.decrypt(text.encode()).decode()
+def decrypt_token(s: str) -> str:
+    return fernet.decrypt(s.encode()).decode()
+
+def generate_dashboard_token() -> str:
+    """Genera un token único para acceso al dashboard."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
