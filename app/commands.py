@@ -5,6 +5,9 @@ import asyncio
 from urllib.parse import quote
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from . import db
+from .auditor import run_audit_for_slug
+from .utils.messages import AUDIT_DONE
 
 from app.utils.safe_exec import safe_execute
 
@@ -217,6 +220,30 @@ class Commands:
         )
 
         await context.bot.send_message(chat_id=user.id, text=msg, parse_mode="HTML", reply_markup=markup)
+
+    # ----------------------------------------------------------
+    # 🛡️ /auditnow — Hace una limpieza instantanea.
+    # ----------------------------------------------------------
+    async def auditnow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ejecuta la auditoría manual y envía confirmación al streamer."""
+    user_id = update.effective_user.id
+    st = await db.get_streamer_by_telegram(user_id)
+    if not st:
+        await update.message.reply_text("No estás vinculado como streamer.")
+        return
+
+    slug = st["slug"]
+    await update.message.reply_text("⏳ Ejecutando auditoría…")
+
+    removed, kept = await run_audit_for_slug(slug, context.application)
+
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=AUDIT_DONE
+        )
+    except Exception:
+        pass
 
     # ----------------------------------------------------------
     # 🧩 AUXILIAR — Generar state aleatorio para OAuth
