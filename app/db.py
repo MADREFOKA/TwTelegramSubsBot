@@ -1,110 +1,91 @@
 # app/db.py
-import os
-import logging
-import psycopg
-from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
+import asyncpg
+from datetime import datetime, timezone
 
-class Database:
-    def __init__(self):
-        self.url = os.getenv("DATABASE_URL")
-        if not self.url:
-            raise ValueError("❌ Falta DATABASE_URL")
+_pool = None
 
-        # Pool de conexiones persistente
-        self.pool = AsyncConnectionPool(
-            conninfo=self.url,
-            min_size=1,
-            max_size=5,
-            max_idle=30,
-            timeout=10,
-            open=False  # lo abrimos manualmente en init()
-        )
+async def init_pool(dsn: str):
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(dsn, max_inactive_connection_lifetime=60)
 
-    async def init(self):
-        """Inicializa el pool y verifica el esquema."""
-        await self.pool.open()
-        logging.info("🗄️ Pool de conexiones abierto correctamente.")
+def pool():
+    if _pool is None:
+        raise RuntimeError("DB pool not initialized")
+    return _pool
 
-        CREATE_SQL = """
-        CREATE TABLE IF NOT EXISTS telegram_users (
-          telegram_id BIGINT PRIMARY KEY,
-          username TEXT,
-          linked_twitch_id TEXT,
-          last_check INTEGER
-        );
+# --- STREAMERS ---
+async def upsert_streamer(slug: str, twitch_user_id: str, telegram_user_id: int, dashboard_token: str):
+    q = """
+    INSERT INTO streamers (slug, twitch_user_id, telegram_user_id, dashboard_token)
+    VALUES ($1,$2,$3,$4)
+    ON CONFLICT (slug)
+    DO UPDATE SET twitch_user_id=EXCLUDED.twitch_user_id,
+                  telegram_user_id=EXCLUDED.telegram_user_id,
+                  dashboard_token=EXCLUDED.dashboard_token,
+                  updated_at=NOW()
+    """
+    async with pool().acquire() as con:
+        await con.execute(q, slug, twitch_user_id, telegram_user_id, dashboard_token)
 
-        CREATE TABLE IF NOT EXISTS broadcasters (
-          broadcaster_id TEXT PRIMARY KEY,
-          owner_telegram_id BIGINT NOT NULL,
-          access_token TEXT NOT NULL,
-          refresh_token TEXT,
-          token_obtained_at INTEGER NOT NULL,
-          token_expires_in INTEGER NOT NULL,
-          group_id BIGINT,
-          invite_link TEXT,
-          free_group_id BIGINT,
-          free_invite_link TEXT,
-          slug TEXT,
-          dashboard_token TEXT
-        );
+async def get_streamer_by_slug(slug: str):
+    q = "SELECT * FROM streamers WHERE slug=$1"
+    async with pool().acquire() as con:
+        return await con.fetchrow(q, slug)
 
-        CREATE TABLE IF NOT EXISTS oauth_states (
-          state TEXT PRIMARY KEY,
-          telegram_id BIGINT NOT NULL,
-          purpose TEXT NOT NULL,
-          created_at INTEGER NOT NULL,
-          broadcaster_id TEXT
-        );
+async def get_streamer_by_telegram(telegram_user_id: int):
+    q = "SELECT * FROM streamers WHERE telegram_user_id=$1"
+    async with pool().acquire() as con:
+        return await con.fetchrow(q, telegram_user_id)
 
-        CREATE TABLE IF NOT EXISTS privileged_users (
-          broadcaster_id TEXT,
-          username TEXT,
-          PRIMARY KEY (broadcaster_id, username)
-        );
+async def set_groups(slug: str, premium_group_id: int | None, free_group_id: int | None):
+    q = """
+    UPDATE streamers
+    SET premium_group_id=COALESCE($2, premium_group_id),
+        free_group_id=COALESCE($3, free_group_id),
+        updated_at=NOW()
+    WHERE slug=$1
+    """
+    async with pool().acquire() as con:
+        await con.execute(q, slug, premium_group_id, free_group_id)
 
-        CREATE INDEX IF NOT EXISTS idx_broadcaster_slug ON broadcasters(slug);
-        CREATE INDEX IF NOT EXISTS idx_oauth_telegram ON oauth_states(telegram_id);
-        """
+async def list_all_slugs():
+    q = "SELECT slug FROM streamers"
+    async with pool().acquire() as con:
+        rows = await con.fetch(q)
+    return [r["slug"] for r in rows]
 
-        async with self.pool.connection() as con:
-            async with con.cursor() as cur:
-                for stmt in [s.strip() for s in CREATE_SQL.split(";") if s.strip()]:
-                    await cur.execute(stmt)
-            await con.commit()
-        logging.info("🗄️ Esquema de base de datos verificado correctamente.")
+# --- TOKENS ---
+async def save_tokens(slug: str, access_token_enc: str, refresh_token_enc: str, expires_at_utc: datetime):
+    q = """
+    INSERT INTO twitch_tokens(slug, access_token_enc, refresh_token_enc, expires_at, updated_at)
+    VALUES ($1,$2,$3,$4,NOW())
+    ON CONFLICT (slug)
+    DO UPDATE SET access_token_enc=EXCLUDED.access_token_enc,
+                  refresh_token_enc=EXCLUDED.refresh_token_enc,
+                  expires_at=EXCLUDED.expires_at,
+                  updated_at=NOW()
+    """
+    async with pool().acquire() as con:
+        await con.execute(q, slug, access_token_enc, refresh_token_enc, expires_at_utc.replace(tzinfo=timezone.utc))
 
-    # ----------------------------------------------------------
-    # Funciones básicas con reconexión y logging seguro
-    # ----------------------------------------------------------
-    async def exec(self, query: str, *params):
-        try:
-            async with self.pool.connection() as con:
-                async with con.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                await con.commit()
-        except Exception as e:
-            logging.error(f"❌ Error ejecutando query: {e}\nSQL: {query}")
-            raise
+async def get_tokens(slug: str):
+    q = "SELECT access_token_enc, refresh_token_enc, expires_at FROM twitch_tokens WHERE slug=$1"
+    async with pool().acquire() as con:
+        return await con.fetchrow(q, slug)
 
-    async def one(self, query: str, *params):
-        try:
-            async with self.pool.connection() as con:
-                con.row_factory = dict_row
-                async with con.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                    return await cur.fetchone()
-        except Exception as e:
-            logging.error(f"❌ Error en query (one): {e}\nSQL: {query}")
-            raise
+# --- AUDITS ---
+async def record_audit(slug: str, removed: int, kept: int, notes: str | None = None):
+    q = "INSERT INTO audits(slug, removed_count, kept_count, notes) VALUES ($1,$2,$3,$4)"
+    async with pool().acquire() as con:
+        await con.execute(q, slug, removed, kept, notes)
 
-    async def all(self, query: str, *params):
-        try:
-            async with self.pool.connection() as con:
-                con.row_factory = dict_row
-                async with con.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                    return await cur.fetchall()
-        except Exception as e:
-            logging.error(f"❌ Error en query (all): {e}\nSQL: {query}")
-            raise
+async def get_latest_audit_stats(slug: str, limit: int = 30):
+    q = """
+    SELECT run_at, removed_count, kept_count
+    FROM audits WHERE slug=$1
+    ORDER BY run_at DESC
+    LIMIT $2
+    """
+    async with pool().acquire() as con:
+        return await con.fetch(q, slug, limit)
