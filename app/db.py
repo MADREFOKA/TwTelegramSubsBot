@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 _pool = None
 
 async def init_pool(dsn: str):
+    """Inicializa la conexión con la base de datos."""
     global _pool
     if _pool is None:
         _pool = await asyncpg.create_pool(dsn, max_inactive_connection_lifetime=60)
