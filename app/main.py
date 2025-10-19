@@ -1,7 +1,7 @@
 # app/main.py
 import asyncio
 import logging
-from app import db
+from app.db import Database
 from app.bot import TwitchSubBot
 
 logging.basicConfig(
@@ -12,7 +12,10 @@ logging.basicConfig(
 async def main():
     db = Database()
     bot = TwitchSubBot(db)
-    await bot.start()
+    try:
+        await bot.start()
+    except Exception as e:
+        logging.error(f"❌ Error al iniciar el bot: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
