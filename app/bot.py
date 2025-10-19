@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ChatMemberHandler
 from telegram import Update
 
 from app import db
-from app.security import TokenCipher
+from app.security import encrypt_token, decrypt_token
 from app.commands import Commands
 from app.oauth import OAuthHandlers
 from app.auditor import Auditor
@@ -35,7 +35,8 @@ class TwitchSubBot:
     def __init__(self, db: Database):
         self.db = db
         self.cfg = Config()
-        self.cipher = TokenCipher()
+        encrypted = encrypt_token(token)
+        decrypted = decrypt_token(token)
         self.app = None
 
         # Componentes
