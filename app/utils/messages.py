@@ -87,9 +87,11 @@ def audit_failed() -> str:
 # ───────────────────────────────
 # ⚠️ ERRORES Y SISTEMA
 # ───────────────────────────────
-
 def not_streamer() -> str:
-    return "🚫 No estás registrado como streamer. Usa /setup para comenzar."
+    return (
+        "🚫 Este comando es solo para streamers verificados.\n\n"
+        "Si eres viewer, puedes seguir usando el bot con tu enlace personal."
+    )
 
 def missing_group() -> str:
     return "⚠️ Aún no has configurado tu grupo premium. Usa /setgroup."
