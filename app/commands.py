@@ -225,27 +225,27 @@ class Commands:
     # 🛡️ /auditnow — Hace una limpieza instantanea.
     # ----------------------------------------------------------
     async def auditnow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ejecuta la auditoría manual y envía confirmación al streamer."""
-    user_id = update.effective_user.id
-    st = await db.get_streamer_by_telegram(user_id)
-    if not st:
-        await update.message.reply_html(messages.not_streamer())
-        return
-
-    slug = st["slug"]
-    await update.message.reply_html(messages.audit_start())
-
-    # Ejecutar auditoría asincrónica
-    removed, kept = await run_audit_for_slug(slug, context.application)
-
-    try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=messages.audit_done()
-        )
-    except Exception:
-        pass
-        
+        """Ejecuta la auditoría manual y envía confirmación al streamer."""
+        user_id = update.effective_user.id
+        st = await db.get_streamer_by_telegram(user_id)
+        if not st:
+            await update.message.reply_html(messages.not_streamer())
+            return
+    
+        slug = st["slug"]
+        await update.message.reply_html(messages.audit_start())
+    
+        # Ejecutar auditoría asincrónica
+        removed, kept = await run_audit_for_slug(slug, context.application)
+    
+        try:
+            # DM al streamer con confirmación
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=messages.audit_done()
+            )
+        except Exception:
+            pass        
     # ----------------------------------------------------------
     # 🧩 AUXILIAR — Generar state aleatorio para OAuth
     # ----------------------------------------------------------
