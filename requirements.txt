@@ -1,24 +1,28 @@
-# Telegram Bot + Auditoría
-python-telegram-bot[job-queue,webhooks]==20.8
+# ─────────────────────────────
+# CORE - BOT ASÍNCRONO (TELEGRAM)
+# ─────────────────────────────
+python-telegram-bot>=21.0
+aiohttp>=3.9
 
-# Servidor web (Twitch OAuth + Dashboard)
-aiohttp==3.9.5
+# ─────────────────────────────
+# BASE DE DATOS ASÍNCRONA (NeonDB / PostgreSQL)
+# ─────────────────────────────
+asyncpg>=0.29
 
-# Base de datos NeonDB (con pool asíncrono)
-psycopg[binary,pool]==3.2.3
+# ─────────────────────────────
+# DASHBOARD (WEB APP)
+# ─────────────────────────────
+Flask>=3.0
+jinja2>=3.1
 
-# Variables de entorno y configuración
-python-dotenv==1.0.1
+# ─────────────────────────────
+# SEGURIDAD Y CIFRADO
+# ─────────────────────────────
+cryptography>=43
 
-# Peticiones HTTP (Twitch API, pruebas)
-requests==2.32.3
-
-# Zona horaria
-tzdata==2024.1
-
-# Seguridad y cifrado (para tokens)
-cryptography==43.0.1
-
-# Render y HTML templating
-jinja2==3.1.4
-
+# ─────────────────────────────
+# UTILIDADES / FORMATOS
+# ─────────────────────────────
+python-dotenv>=1.0
+requests>=2.32
+gunicorn>=22.0
