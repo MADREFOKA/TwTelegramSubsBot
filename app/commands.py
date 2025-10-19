@@ -229,22 +229,23 @@ class Commands:
     user_id = update.effective_user.id
     st = await db.get_streamer_by_telegram(user_id)
     if not st:
-        await update.message.reply_text("No estás vinculado como streamer.")
+        await update.message.reply_html(messages.not_streamer())
         return
 
     slug = st["slug"]
-    await update.message.reply_text("⏳ Ejecutando auditoría…")
+    await update.message.reply_html(messages.audit_start())
 
+    # Ejecutar auditoría asincrónica
     removed, kept = await run_audit_for_slug(slug, context.application)
 
     try:
         await context.bot.send_message(
             chat_id=user_id,
-            text=AUDIT_DONE
+            text=messages.audit_done()
         )
     except Exception:
         pass
-
+        
     # ----------------------------------------------------------
     # 🧩 AUXILIAR — Generar state aleatorio para OAuth
     # ----------------------------------------------------------
