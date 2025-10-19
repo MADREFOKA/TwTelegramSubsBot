@@ -1,7 +1,7 @@
 # app/main.py
 import asyncio
 import logging
-from app.db import Database
+from app import db
 from app.bot import TwitchSubBot
 
 logging.basicConfig(
