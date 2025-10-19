@@ -10,7 +10,7 @@ from aiohttp import web
 from telegram.ext import ApplicationBuilder, CommandHandler, ChatMemberHandler
 from telegram import Update
 
-from app.db import Database
+from app import db
 from app.security import TokenCipher
 from app.commands import Commands
 from app.oauth import OAuthHandlers
