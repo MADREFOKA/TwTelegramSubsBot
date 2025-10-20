@@ -1,73 +1,56 @@
-# app/auditor.py
-import os
-import aiohttp
-from typing import Tuple
-from . import db
-from .oauth import ensure_valid_token
+import asyncio
+import logging
+from aiohttp import web
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler
+from app.commands import Commands
+from app.oauth import OAuthHandler
+from app.auditor import Auditor
+from app.dashboard import Dashboard
+from app.security import TokenCipher
 
-TW_HELIX_URL = "https://api.twitch.tv/helix"
 
-async def _fetch_current_subscribers(slug: str, twitch_user_id: str, access_token: str) -> set[str]:
-    """Obtiene la lista actual de suscriptores activos desde Twitch."""
-    headers = {
-        "Client-Id": os.environ["TWITCH_CLIENT_ID"],
-        "Authorization": f"Bearer {access_token}",
-    }
-    subs = set()
-    url = f"{TW_HELIX_URL}/subscriptions?broadcaster_id={twitch_user_id}"
+class TwitchSubBot:
+    def __init__(self, db):
+        self.db = db
+        self.cfg = db.cfg
+        self.cipher = TokenCipher()
+        self.oauth = OAuthHandler(self.db, self.cfg, self.cipher)
+        self.commands = Commands(self.db, self.cfg, self.cipher)
+        self.auditor = Auditor(self.db)
+        self.dashboard = Dashboard(self.db)
 
-    async with aiohttp.ClientSession() as session:
-        while url:
-            async with session.get(url, headers=headers) as resp:
-                data = await resp.json()
-            for item in data.get("data", []):
-                subs.add(item["user_id"])
-            cursor = data.get("pagination", {}).get("cursor")
-            url = f"{TW_HELIX_URL}/subscriptions?broadcaster_id={twitch_user_id}&after={cursor}" if cursor else None
+    async def start(self):
+        app = ApplicationBuilder().token(self.cfg.token).build()
 
-    return subs
+        app.add_handler(CommandHandler("setup", self.commands.cmd_setup))
+        app.add_handler(CommandHandler("start", self.commands.cmd_start))
+        app.add_handler(CommandHandler("setgroup", self.commands.cmd_setgroup))
+        app.add_handler(CommandHandler("setfreegroup", self.commands.cmd_setfreegroup))
+        app.add_handler(CommandHandler("regendashlink", self.commands.cmd_regendashlink))
 
-async def run_audit_for_slug(slug: str, tg_app) -> Tuple[int, int]:
-    """Audita suscriptores y limpia usuarios no suscritos."""
-    st = await db.get_streamer_by_slug(slug)
-    if not st:
-        raise RuntimeError(f"Streamer not found {slug}")
+        # Auditoría semanal
+        self.auditor.schedule_weekly_audit(app.job_queue)
 
-    premium_group_id = st["premium_group_id"]
-    free_group_id = st["free_group_id"]
-    twitch_user_id = st["twitch_user_id"]
+        web_app = web.Application()
+        web_app.router.add_post("/webhook", self.webhook_handler)
+        web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
+        web_app.router.add_get("/twitch/callback", self.oauth.twitch_callback_user)
+        web_app.router.add_get("/dashboard/{slug}", self.dashboard.page)
+        web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
-    if not premium_group_id or not twitch_user_id:
-        await db.record_audit(slug, 0, 0, "Missing premium_group_id or twitch_user_id")
-        return (0, 0)
+        runner = web.AppRunner(web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", self.cfg.port)
+        await site.start()
 
-    access = await ensure_valid_token(slug)
-    subs_user_ids = await _fetch_current_subscribers(slug, twitch_user_id, access)
+        await app.initialize()
+        await app.start()
+        logging.info("💜 Bot y servidor web iniciados correctamente.")
+        await asyncio.Event().wait()
 
-    # 🔧 Aquí debes reemplazar con tu lógica real de mapeo Telegram ↔ Twitch
-    twitch_map = {}       # telegram_id -> twitch_user_id
-    group_members = set() # IDs reales del grupo (rellena según tu implementación)
-    removed = 0
-    kept = 0
-
-    # Detectar no suscritos
-    to_remove = []
-    for tg_id in group_members:
-        tuid = twitch_map.get(tg_id)
-        if not tuid or tuid not in subs_user_ids:
-            to_remove.append(tg_id)
-
-    # Expulsar y mover
-    for tg_id in to_remove:
-        try:
-            await tg_app.bot.ban_chat_member(premium_group_id, tg_id)
-            await tg_app.bot.unban_chat_member(premium_group_id, tg_id)
-            removed += 1
-            if free_group_id:
-                await tg_app.bot.send_message(tg_id, "Tu suscripción expiró. Únete al grupo gratuito aquí: [link]")
-        except Exception:
-            pass
-
-    kept = len(group_members) - removed
-    await db.record_audit(slug, removed, kept)
-    return (removed, kept)
+    async def webhook_handler(self, request):
+        data = await request.json()
+        update = Update.de_json(data, self.commands.cfg.bot)
+        await self.commands.cfg.bot.process_update(update)
+        return web.Response(text="OK")
