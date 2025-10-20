@@ -1,36 +1,31 @@
 # app/security.py
 import os
-import logging
-from cryptography.fernet import Fernet
 from typing import Optional
 
+try:
+    from cryptography.fernet import Fernet  # opcional
+except Exception:
+    Fernet = None
+
 class TokenCipher:
-    def __init__(self):
+    """Cifra/descifra strings si hay FERNET_KEY. Si no, hace passthrough."""
+    def __init__(self) -> None:
         key = os.getenv("FERNET_KEY")
-        if key:
-            try:
-                self.fernet: Optional[Fernet] = Fernet(key.encode())
-                logging.info("🔐 Cifrado Fernet inicializado.")
-            except Exception as e:
-                logging.error(f"Error al inicializar Fernet: {e}")
-                self.fernet = None
+        if key and Fernet:
+            self.fernet: Optional[Fernet] = Fernet(key.encode())
         else:
-            logging.warning("⚠️ FERNET_KEY no definida, los tokens no se cifrarán.")
             self.fernet = None
 
-    def encrypt(self, data: str) -> str:
-        if not data:
-            return data
+    def encrypt(self, text: str | None) -> str | None:
+        if not text:
+            return text
         if not self.fernet:
-            return data
-        return self.fernet.encrypt(data.encode()).decode()
+            return text
+        return self.fernet.encrypt(text.encode()).decode()
 
-    def decrypt(self, data: str) -> str:
-        if not data:
-            return data
+    def decrypt(self, text: str | None) -> str | None:
+        if not text:
+            return text
         if not self.fernet:
-            return data
-        try:
-            return self.fernet.decrypt(data.encode()).decode()
-        except Exception:
-            return data
+            return text
+        return self.fernet.decrypt(text.encode()).decode()
