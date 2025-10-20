@@ -1,178 +1,192 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Panel del Streamer</title>
-
-  <!-- Tailwind + Chart.js -->
-  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.4.3/dist/tailwind.min.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-
+  <title>{{ streamer.display_name or "Dashboard" }} — Auditorías</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body {
       background-color: #0e0e10;
       color: #efeff1;
-      font-family: 'Inter', sans-serif;
+      font-family: "Inter", "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
-    .card {
+    header {
+      text-align: center;
+      margin-top: 30px;
+    }
+    header img {
+      width: 96px;
+      height: 96px;
+      border-radius: 50%;
+      border: 3px solid #9146FF;
       background-color: #18181b;
-      border: 1px solid #2d2d33;
-      border-radius: 0.75rem;
-      padding: 1.5rem;
-      box-shadow: 0 0 10px rgba(145, 71, 255, 0.1);
+      object-fit: cover;
     }
-    @keyframes spinSlow {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
+    h1 {
+      margin: 10px 0 5px;
+      font-size: 1.8em;
     }
-    .animate-spin-slow {
-      animation: spinSlow 10s linear infinite;
+    h2 {
+      margin: 30px 0 10px;
+      font-size: 1.3em;
+      color: #bf94ff;
+    }
+    .container {
+      width: 70%;
+      max-width: 900px;
+      background-color: #18181b;
+      border-radius: 10px;
+      box-shadow: 0 0 10px #00000066;
+      padding: 20px 30px;
+      margin-bottom: 30px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: center;
+      margin-top: 10px;
+    }
+    th, td {
+      padding: 10px;
+    }
+    th {
+      color: #bf94ff;
+      border-bottom: 1px solid #3a3a3d;
+    }
+    td {
+      border-bottom: 1px solid #2b2b2d;
+    }
+    .chart-container {
+      width: 70%;
+      max-width: 900px;
+      background-color: #18181b;
+      border-radius: 10px;
+      box-shadow: 0 0 10px #00000066;
+      padding: 20px 30px;
+      margin-bottom: 40px;
+    }
+    canvas {
+      width: 100% !important;
+      height: 250px !important; /* 🔹 Mucho más pequeña */
     }
   </style>
 </head>
+<body>
 
-<body class="min-h-screen flex flex-col items-center py-8">
-
-  <!-- ENCABEZADO -->
-  <header class="flex items-center space-x-4 mb-8">
-    <div class="relative w-20 h-20">
-      <div class="absolute inset-0 rounded-full border-[3px] border-transparent animate-spin-slow bg-gradient-to-tr from-purple-400 via-pink-500 to-indigo-500 bg-[length:200%_200%] opacity-70"></div>
-      <img id="avatar"
-           src="{{ streamer.profile_image_url or 'https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png' }}"
-           alt="Avatar"
-           class="w-20 h-20 rounded-full border-2 border-[#0e0e10] relative z-10 object-cover">
-    </div>
-    <div>
-      <h1 class="text-3xl font-bold text-purple-400">{{ streamer.display_name }}</h1>
-      <p class="text-gray-400">@{{ streamer.slug }}</p>
-    </div>
+  <header>
+    <img src="{{ streamer.profile_image_url or 'https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png' }}" alt="Avatar">
+    <h1>{{ streamer.display_name or streamer.slug }}</h1>
+    <p>@{{ streamer.slug }}</p>
   </header>
 
-  <!-- TARJETA RESUMEN -->
-  <section class="card w-11/12 md:w-2/3 text-center mb-8">
-    <h2 class="text-xl font-semibold text-pink-400 mb-3">Resumen de la última auditoría</h2>
-    {% if last_audit %}
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-lg">
-      <div>
-        <p class="text-gray-400">Miembros totales</p>
-        <p class="font-bold text-white">{{ last_audit.total_miembros }}</p>
-      </div>
-      <div>
-        <p class="text-gray-400">Expulsados</p>
-        <p class="font-bold text-red-400">{{ last_audit.expulsados }}</p>
-      </div>
-      <div>
-        <p class="text-gray-400">Sin vínculo</p>
-        <p class="font-bold text-yellow-400">{{ last_audit.sin_vinculo }}</p>
-      </div>
-      <div>
-        <p class="text-gray-400">Fallos</p>
-        <p class="font-bold text-pink-400">{{ last_audit.fallos }}</p>
-      </div>
-    </div>
-    {% else %}
-    <p class="text-gray-500 mt-2">Aún no se han realizado auditorías.</p>
-    {% endif %}
-  </section>
-
-  <!-- GRÁFICA -->
-  {% if audits|length > 0 %}
-  <section class="card w-11/12 md:w-2/3 mb-8">
-    <h2 class="text-lg font-semibold text-purple-400 mb-2">Historial de auditorías</h2>
-    <canvas id="auditChart" height="140"></canvas>
-  </section>
-  {% endif %}
-
-  <!-- TABLA DE AUDITORÍAS -->
-  <section class="card w-11/12 md:w-2/3 overflow-x-auto">
-    <h2 class="text-lg font-semibold text-purple-400 mb-3">Registros recientes</h2>
-    {% if audits|length > 0 %}
-    <table class="min-w-full text-sm text-gray-300">
-      <thead>
-        <tr class="border-b border-gray-700 text-purple-300">
-          <th class="px-3 py-2 text-left">Semana</th>
-          <th class="px-3 py-2 text-center">Total</th>
-          <th class="px-3 py-2 text-center">Expulsados</th>
-          <th class="px-3 py-2 text-center">Sin vínculo</th>
-          <th class="px-3 py-2 text-center">Fallos</th>
-          <th class="px-3 py-2 text-right">Fecha</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for a in audits %}
-        <tr class="hover:bg-[#202024] transition">
-          <td class="px-3 py-2">{{ a.etiqueta_semana or '-' }}</td>
-          <td class="px-3 py-2 text-center">{{ a.total_miembros }}</td>
-          <td class="px-3 py-2 text-center text-red-400">{{ a.expulsados }}</td>
-          <td class="px-3 py-2 text-center text-yellow-400">{{ a.sin_vinculo }}</td>
-          <td class="px-3 py-2 text-center text-pink-400">{{ a.fallos }}</td>
-          <td class="px-3 py-2 text-right text-gray-400">
-            {{ a.fecha_auditoria.strftime("%d/%m/%Y") if a.fecha_auditoria else "-" }}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
+  <div class="container">
+    <h2>Resumen de la última auditoría</h2>
+    {% if resumen %}
+    <table>
+      <tr>
+        <th>Miembros totales</th>
+        <th>Expulsados</th>
+        <th>Sin vínculo</th>
+        <th>Fallos</th>
+      </tr>
+      <tr>
+        <td>{{ resumen.total_miembros }}</td>
+        <td>{{ resumen.expulsados }}</td>
+        <td>{{ resumen.sin_vinculo }}</td>
+        <td>{{ resumen.fallos }}</td>
+      </tr>
     </table>
     {% else %}
-    <p class="text-gray-500 mt-2">No hay registros aún.</p>
+    <p>No hay datos de auditorías todavía.</p>
     {% endif %}
-  </section>
+  </div>
 
-  <!-- FOOTER -->
-  <footer class="text-gray-500 mt-10 text-sm">
-    Hecho con 💜 para la comunidad de Twitch
-  </footer>
+  <div class="chart-container">
+    <h2>Historial de auditorías</h2>
+    <canvas id="auditChart"></canvas>
+  </div>
 
-  <!-- SCRIPT: GRÁFICA -->
-  {% if audits|length > 0 %}
+  <div class="container">
+    <h2>Detalles de auditorías</h2>
+    {% if logs %}
+    <table>
+      <tr>
+        <th>Semana</th>
+        <th>Miembros</th>
+        <th>Expulsados</th>
+        <th>Sin vínculo</th>
+        <th>Fallos</th>
+        <th>Fecha</th>
+      </tr>
+      {% for log in logs %}
+      <tr>
+        <td>{{ log.etiqueta_semana or '-' }}</td>
+        <td>{{ log.total_miembros }}</td>
+        <td>{{ log.expulsados }}</td>
+        <td>{{ log.sin_vinculo }}</td>
+        <td>{{ log.fallos }}</td>
+        <td>{{ log.fecha_auditoria.strftime("%d/%m/%Y") if log.fecha_auditoria else '-' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p>No hay auditorías registradas aún.</p>
+    {% endif %}
+  </div>
+
   <script>
-    const ctx = document.getElementById('auditChart');
-    const labels = {{ audits|map(attribute='etiqueta_semana')|list|tojson }};
-    const expulsados = {{ audits|map(attribute='expulsados')|list|tojson }};
-    const sinVinculo = {{ audits|map(attribute='sin_vinculo')|list|tojson }};
-    const fallos = {{ audits|map(attribute='fallos')|list|tojson }};
+    const ctx = document.getElementById('auditChart').getContext('2d');
+    const labels = {{ logs | map(attribute='etiqueta_semana') | list | tojson }};
+    const expulsados = {{ logs | map(attribute='expulsados') | list | tojson }};
+    const sinVinculo = {{ logs | map(attribute='sin_vinculo') | list | tojson }};
+    const fallos = {{ logs | map(attribute='fallos') | list | tojson }};
 
     new Chart(ctx, {
       type: 'line',
       data: {
-        labels: labels,
+        labels,
         datasets: [
           {
             label: 'Expulsados',
             data: expulsados,
-            borderColor: '#f87171',
-            backgroundColor: 'rgba(248,113,113,0.2)',
-            fill: true,
+            borderColor: '#ff4d4d',
+            backgroundColor: '#ff4d4d33',
             tension: 0.3
           },
           {
             label: 'Sin vínculo',
             data: sinVinculo,
-            borderColor: '#facc15',
-            backgroundColor: 'rgba(250,204,21,0.2)',
-            fill: true,
+            borderColor: '#ffd633',
+            backgroundColor: '#ffd63333',
             tension: 0.3
           },
           {
             label: 'Fallos',
             data: fallos,
-            borderColor: '#ec4899',
-            backgroundColor: 'rgba(236,72,153,0.2)',
-            fill: true,
+            borderColor: '#ff66cc',
+            backgroundColor: '#ff66cc33',
             tension: 0.3
           }
         ]
       },
       options: {
-        plugins: { legend: { labels: { color: '#e5e7eb' } } },
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: '#efeff1' } }
+        },
         scales: {
-          x: { ticks: { color: '#a1a1aa' }, grid: { color: '#27272a' } },
-          y: { ticks: { color: '#a1a1aa' }, grid: { color: '#27272a' } }
+          x: { ticks: { color: '#ccc' }, grid: { color: '#222' } },
+          y: { ticks: { color: '#ccc' }, grid: { color: '#222' } }
         }
       }
     });
   </script>
-  {% endif %}
+
 </body>
 </html>
