@@ -1,13 +1,13 @@
 import time
 import logging
 import asyncio
-import aiohttp
 import secrets
 import string
 from urllib.parse import quote
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from app.utils.safe_exec import safe_exec
+
 
 class Commands:
     def __init__(self, db, cfg, cipher):
@@ -16,39 +16,40 @@ class Commands:
         self.cipher = cipher
 
         # Constantes Twitch
-        self.TW_API = "https://api.twitch.tv/helix"
-        self.TW_AUTH = "https://id.twitch.tv/oauth2/authorize"
+        self.TW_API = cfg.TW_API
+        self.TW_AUTH = cfg.TW_AUTH
+        self.TW_TOKEN = cfg.TW_TOKEN
         self.SCOPE_SETUP = ["channel:read:subscriptions"]
         self.SCOPE_USER = ["user:read:email"]
 
     # ---------------------------
-    # Utilidad para enviar mensajes
+    # UTILIDAD PARA ENVIAR MENSAJES
     # ---------------------------
-    async def send_tg(self, chat_id, text, buttons=None, html=False):
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": True,
-        }
-        if html:
+    async def send_tg(self, chat_id, text, md=False, html=False):
+        """Envia mensajes a Telegram de forma segura"""
+        import aiohttp
+        url = f"https://api.telegram.org/bot{self.cfg.token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+        if md:
+            payload["parse_mode"] = "Markdown"
+        elif html:
             payload["parse_mode"] = "HTML"
-        if buttons:
-            payload["reply_markup"] = {"inline_keyboard": buttons}
-
-        async with aiohttp.ClientSession() as session:
-            await session.post(f"https://api.telegram.org/bot{self.cfg.token}/sendMessage", json=payload)
-
-    def _gen_state(self, n=32):
-        return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=10) as resp:
+                    if resp.status != 200:
+                        logging.warning(f"Telegram {resp.status}: {await resp.text()}")
+        except Exception as e:
+            logging.error(f"send_tg error: {e}")
 
     # ---------------------------
-    # /setup — streamer
+    # /SETUP — STREAMER
     # ---------------------------
     @safe_exec()
     async def cmd_setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /setup — inicia el vínculo del streamer"""
         if update.effective_chat.type != "private":
             return await update.message.reply_text("⚠️ Usa este comando en privado.")
-
         user = update.effective_user
         state = self._gen_state()
         await self.db.exec(
@@ -58,25 +59,21 @@ class Commands:
 
         redirect_uri = f"{self.cfg.base_url}/twitch/setup/callback"
         scope = quote(" ".join(self.SCOPE_SETUP))
-        url = (
-            f"{self.TW_AUTH}?client_id={self.cfg.client_id}"
-            f"&redirect_uri={quote(redirect_uri)}"
-            f"&response_type=code&scope={scope}&state={state}&force_verify=true"
-        )
+        url = (f"{self.TW_AUTH}?client_id={self.cfg.client_id}&redirect_uri={quote(redirect_uri)}"
+               f"&response_type=code&scope={scope}&state={state}&force_verify=true")
 
-        buttons = [[InlineKeyboardButton("💜 Vincular Canal de Twitch", url=url)]]
-        await self.send_tg(
-            user.id,
-            "💜 <b>Vincula tu canal de Twitch para configurar tu bot</b>\n\n"
-            "Tras autorizar, podrás conectar tus grupos premium y dashboard.",
-            buttons=buttons, html=True
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💜 Vincular canal de Twitch", url=url)]])
+        await update.message.reply_text(
+            "Pulsa el botón para vincular tu canal de Twitch con el bot:",
+            reply_markup=keyboard
         )
 
     # ---------------------------
-    # /start — viewer
+    # /START — VIEWER
     # ---------------------------
     @safe_exec()
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /start — para los viewers que se vinculan"""
         if update.effective_chat.type != "private":
             return
         user = update.effective_user
@@ -97,24 +94,21 @@ class Commands:
 
         redirect_uri = f"{self.cfg.base_url}/twitch/callback"
         scope = quote(" ".join(self.SCOPE_USER))
-        url = (
-            f"{self.TW_AUTH}?client_id={self.cfg.client_id}"
-            f"&redirect_uri={quote(redirect_uri)}"
-            f"&response_type=code&scope={scope}&state={state}&force_verify=true"
-        )
+        url = (f"{self.TW_AUTH}?client_id={self.cfg.client_id}&redirect_uri={quote(redirect_uri)}"
+               f"&response_type=code&scope={scope}&state={state}&force_verify=true")
 
-        buttons = [[InlineKeyboardButton("💜 Vincular mi Twitch", url=url)]]
-        await self.send_tg(
-            user.id,
-            f"💜 <b>Conecta tu Twitch para verificar tu suscripción a {slug}</b>",
-            buttons=buttons, html=True
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💜 Verificar suscripción", url=url)]])
+        await update.message.reply_text(
+            f"Pulsa el botón para vincular tu Twitch y comprobar si eres sub de *{slug}*:",
+            reply_markup=keyboard, parse_mode="Markdown"
         )
 
     # ---------------------------
-    # /setgroup — grupo premium
+    # /SETGROUP — STREAMER
     # ---------------------------
     @safe_exec()
     async def cmd_setgroup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Vincula grupo premium del streamer"""
         if update.effective_chat.type not in ("group", "supergroup"):
             return
         user = update.effective_user
@@ -129,19 +123,22 @@ class Commands:
         )
 
         new_link = f"{self.cfg.base_url}/dashboard/{b['slug']}?token={b['dashboard_token']}"
-        buttons = [[InlineKeyboardButton("📊 Abrir Dashboard", url=new_link)]]
-        await self.send_tg(
-            user.id,
-            "✅ <b>Grupo premium vinculado correctamente.</b>\n\n"
-            "A partir de ahora, solo los subs de tu canal tendrán acceso.",
-            buttons=buttons, html=True
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 Abrir Dashboard", url=new_link)]
+        ])
+
+        await update.message.reply_text(
+            f"✅ Grupo premium vinculado correctamente.\n\n"
+            f"💜 Enlace para viewers:\nhttps://t.me/{self.cfg.bot_username}?start={b['slug']}",
+            reply_markup=keyboard
         )
 
     # ---------------------------
-    # /setfreegroup — grupo gratuito
+    # /SETFREEGROUP — STREAMER
     # ---------------------------
     @safe_exec()
     async def cmd_setfreegroup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Vincula grupo gratuito del streamer"""
         if update.effective_chat.type not in ("group", "supergroup"):
             return
         user = update.effective_user
@@ -154,18 +151,17 @@ class Commands:
             "UPDATE broadcasters SET free_group_id=%s, free_invite_link=%s WHERE broadcaster_id=%s",
             update.effective_chat.id, link.invite_link, b["broadcaster_id"]
         )
-
         await update.message.reply_text("✅ Grupo gratuito vinculado correctamente.")
 
     # ---------------------------
-    # /regendashlink — regenerar enlace privado
+    # /REGENDASHLINK — STREAMER
     # ---------------------------
     @safe_exec()
     async def cmd_regendashlink(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Permite al streamer regenerar su enlace privado del dashboard."""
         if update.effective_chat.type != "private":
             return await update.message.reply_text("⚠️ Usa este comando en privado.")
 
-        import secrets
         user = update.effective_user
         b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
         if not b:
@@ -176,12 +172,20 @@ class Commands:
             "UPDATE broadcasters SET dashboard_token=%s WHERE broadcaster_id=%s",
             new_token, b["broadcaster_id"]
         )
-
         new_link = f"{self.cfg.base_url}/dashboard/{b['slug']}?token={new_token}"
-        buttons = [[InlineKeyboardButton("📊 Abrir Dashboard", url=new_link)]]
-        await self.send_tg(
-            user.id,
-            "✅ <b>Enlace del dashboard actualizado</b>\n\n"
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 Abrir nuevo dashboard", url=new_link)]
+        ])
+
+        await update.message.reply_text(
+            "✅ Nuevo enlace del dashboard generado.\n\n"
             "🛡️ El enlace anterior ha sido invalidado por seguridad.",
-            buttons=buttons, html=True
+            reply_markup=keyboard
         )
+
+    # ---------------------------
+    # AUXILIAR
+    # ---------------------------
+    def _gen_state(self, n=32):
+        return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
