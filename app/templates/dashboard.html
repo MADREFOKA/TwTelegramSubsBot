@@ -1,126 +1,108 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <title>Dashboard - {{ slug }}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard – {{slug}}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    body {
-      background-color: #0e0e10;
-      color: #efeff1;
-      font-family: 'Inter', sans-serif;
-    }
-    .navbar {
-      background-color: #9146FF;
-      border-bottom: 3px solid #772ce8;
-    }
-    .navbar-brand {
-      color: white !important;
-      font-weight: 600;
-      font-size: 1.3rem;
-    }
-    .chart-container {
-      background: #18181b;
-      border-radius: 15px;
-      padding: 25px;
-      box-shadow: 0 0 10px rgba(0,0,0,0.5);
-    }
-    .table {
-      color: #efeff1;
-      border-color: #2c2c2e;
-    }
-    .table th {
-      color: #a970ff;
-    }
-    .footer {
-      text-align: center;
-      color: #777;
-      margin-top: 40px;
-      font-size: 0.9rem;
-    }
-  </style>
 </head>
-<body>
-  <nav class="navbar navbar-dark mb-5">
-    <div class="container">
-      <span class="navbar-brand">Twitch Subs Dashboard — {{ slug }}</span>
-    </div>
-  </nav>
+<body class="bg-[#0e0e10] text-gray-200 font-sans">
+  <div id="app" class="p-6 max-w-6xl mx-auto">
+    <header class="mb-6">
+      <h1 class="text-3xl font-bold text-purple-500">
+        💜 Dashboard de {{display_name}}
+      </h1>
+      <p class="text-gray-400">Gestión de suscriptores y auditorías</p>
+    </header>
 
-  <div class="container">
-    <div class="chart-container mb-4">
-      <h4 class="mb-4 text-center">📈 Actividad de Auditorías</h4>
-      <canvas id="auditChart" height="120"></canvas>
+    <!-- Tabs -->
+    <div class="flex gap-4 mb-4 border-b border-gray-700">
+      <button id="tab-historial" class="tab-btn border-b-2 border-purple-500 pb-2 font-semibold">📜 Historial</button>
+      <button id="tab-estadisticas" class="tab-btn pb-2 text-gray-400 hover:text-purple-400">📈 Estadísticas</button>
     </div>
 
-    <div class="table-responsive">
-      <h5 class="mb-3">📋 Registros recientes</h5>
-      <table class="table table-dark table-striped align-middle">
-        <thead>
+    <!-- Historial -->
+    <div id="historial" class="tab-content">
+      <table class="w-full border-collapse text-sm">
+        <thead class="bg-[#18181b] text-gray-300 uppercase text-xs">
           <tr>
-            <th>Fecha</th>
-            <th>Suscriptores Activos</th>
-            <th>Eliminados</th>
+            <th class="p-3 text-left">Semana</th>
+            <th class="p-3 text-center">Miembros</th>
+            <th class="p-3 text-center">Expulsados</th>
+            <th class="p-3 text-center">Sin vínculo</th>
+            <th class="p-3 text-center">Fallos</th>
+            <th class="p-3 text-center">Fecha</th>
           </tr>
         </thead>
-        <tbody>
-          {% for i in range(labels|length) %}
-            <tr>
-              <td>{{ labels[i] }}</td>
-              <td>{{ kept[i] }}</td>
-              <td class="text-danger">{{ removed[i] }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
+        <tbody id="table-body"></tbody>
       </table>
     </div>
-  </div>
 
-  <div class="footer">
-    <p>Bot de Twitch © 2025 — Dashboard seguro para streamers</p>
+    <!-- Estadísticas -->
+    <div id="estadisticas" class="tab-content hidden">
+      <div class="bg-[#18181b] rounded-xl p-6 mt-4 shadow-lg">
+        <canvas id="chart" height="120"></canvas>
+      </div>
+    </div>
   </div>
 
   <script>
-    const labels = {{ labels|tojson }};
-    const removed = {{ removed|tojson }};
-    const kept = {{ kept|tojson }};
+    const ctxData = {{data}};
+    const logs = ctxData.logs;
 
-    const ctx = document.getElementById('auditChart');
-    new Chart(ctx, {
+    // Tabla dinámica
+    const tbody = document.getElementById("table-body");
+    logs.forEach(log => {
+      const tr = document.createElement("tr");
+      tr.className = "border-b border-gray-800 hover:bg-[#1f1f23]";
+      tr.innerHTML = `
+        <td class="p-3">${log.etiqueta_semana || "—"}</td>
+        <td class="p-3 text-center">${log.total_miembros ?? 0}</td>
+        <td class="p-3 text-center text-purple-400">${log.expulsados ?? 0}</td>
+        <td class="p-3 text-center text-yellow-400">${log.sin_vinculo ?? 0}</td>
+        <td class="p-3 text-center text-red-400">${log.fallos ?? 0}</td>
+        <td class="p-3 text-center">${new Date(log.fecha_auditoria).toLocaleString()}</td>`;
+      tbody.appendChild(tr);
+    });
+
+    // Tabs
+    const tabs = {
+      historial: document.getElementById("historial"),
+      estadisticas: document.getElementById("estadisticas"),
+    };
+    const btns = {
+      historial: document.getElementById("tab-historial"),
+      estadisticas: document.getElementById("tab-estadisticas"),
+    };
+    Object.keys(btns).forEach(key => {
+      btns[key].addEventListener("click", () => {
+        Object.values(tabs).forEach(el => el.classList.add("hidden"));
+        Object.values(btns).forEach(el => el.classList.remove("border-purple-500", "text-white"));
+        tabs[key].classList.remove("hidden");
+        btns[key].classList.add("border-b-2", "border-purple-500", "text-white");
+      });
+    });
+
+    // Chart
+    new Chart(document.getElementById("chart"), {
       type: 'line',
       data: {
-        labels: labels.reverse(),
+        labels: ctxData.chart_labels,
         datasets: [
-          {
-            label: 'Activos',
-            data: kept.reverse(),
-            borderColor: '#00FF9D',
-            backgroundColor: 'rgba(0,255,157,0.1)',
-            tension: 0.3,
-            fill: true
-          },
-          {
-            label: 'Eliminados',
-            data: removed.reverse(),
-            borderColor: '#f05050',
-            backgroundColor: 'rgba(240,80,80,0.1)',
-            tension: 0.3,
-            fill: true
-          }
-        ]
+          { label: "Miembros", data: ctxData.chart_members, borderColor: "#3b82f6", fill: false },
+          { label: "Expulsados", data: ctxData.chart_expelled, borderColor: "#a855f7", fill: false },
+          { label: "Sin vínculo", data: ctxData.chart_nolink, borderColor: "#facc15", fill: false },
+          { label: "Fallos", data: ctxData.chart_fails, borderColor: "#ef4444", fill: false },
+        ],
       },
       options: {
         responsive: true,
-        plugins: {
-          legend: { labels: { color: 'white' } },
-          title: { display: false }
-        },
+        plugins: { legend: { labels: { color: "#ddd" } } },
         scales: {
-          x: { ticks: { color: '#ccc' }, grid: { color: '#2c2c2e' } },
-          y: { ticks: { color: '#ccc' }, grid: { color: '#2c2c2e' } }
-        }
+          x: { ticks: { color: "#bbb" }, grid: { color: "#222" } },
+          y: { ticks: { color: "#bbb" }, grid: { color: "#222" } },
+        },
       }
     });
   </script>
