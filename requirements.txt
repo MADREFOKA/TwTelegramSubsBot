@@ -1,28 +1,7 @@
-# ─────────────────────────────
-# CORE - BOT ASÍNCRONO (TELEGRAM)
-# ─────────────────────────────
-python-telegram-bot>=21.0
-aiohttp>=3.9
-
-# ─────────────────────────────
-# BASE DE DATOS ASÍNCRONA (NeonDB / PostgreSQL)
-# ─────────────────────────────
-asyncpg>=0.29
-
-# ─────────────────────────────
-# DASHBOARD (WEB APP)
-# ─────────────────────────────
-Flask>=3.0
-jinja2>=3.1
-
-# ─────────────────────────────
-# SEGURIDAD Y CIFRADO
-# ─────────────────────────────
-cryptography>=43
-
-# ─────────────────────────────
-# UTILIDADES / FORMATOS
-# ─────────────────────────────
-python-dotenv>=1.0
-requests>=2.32
-gunicorn>=22.0
+python-telegram-bot[webhooks,job-queue]==20.8
+aiohttp==3.9.5
+psycopg[binary,pool]==3.2.3
+python-dotenv==1.0.1
+cryptography==42.0.7
+requests==2.32.3
+tzdata==2024.1
