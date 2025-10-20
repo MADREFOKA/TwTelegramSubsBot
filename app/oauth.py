@@ -1,59 +1,77 @@
-# app/oauth.py
-import os
-import logging
 import aiohttp
+import logging
+import time
 from aiohttp import web
-from app.security import TokenCipher
-
-TW_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID") or os.getenv("OAUTH_CLIENT_ID")
-TW_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET") or os.getenv("OAUTH_CLIENT_SECRET")
-TW_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
-TW_API_URL = "https://api.twitch.tv/helix"
+from app.utils.safe_exec import safe_exec
 
 class OAuthHandler:
-    def __init__(self, db):
+    def __init__(self, db, cfg, cipher):
         self.db = db
-        self.cipher = TokenCipher()
+        self.cfg = cfg
+        self.cipher = cipher
 
-    async def twitch_callback_setup(self, request):
-        try:
-            code = request.query.get("code")
-            state = request.query.get("state")
-            if not code or not state:
-                return web.Response(status=400, text="Código o estado inválido.")
+    # ---------------------------
+    # Callback del streamer (/twitch/setup/callback)
+    # ---------------------------
+    @safe_exec()
+    async def twitch_callback_setup(self, request: web.Request):
+        params = request.rel_url.query
+        code = params.get("code")
+        state = params.get("state")
+        if not code or not state:
+            return web.Response(text="❌ Parámetros inválidos.", status=400)
 
-            state_row = await self.db.one("SELECT * FROM oauth_states WHERE state=%s", state)
-            if not state_row:
-                return web.Response(status=400, text="Estado no reconocido.")
+        token_data = await self._exchange_code(code)
+        if not token_data:
+            return web.Response(text="❌ Error autenticando con Twitch.", status=400)
 
-            async with aiohttp.ClientSession() as session:
-                payload = {
-                    "client_id": TW_CLIENT_ID,
-                    "client_secret": TW_CLIENT_SECRET,
-                    "code": code,
-                    "grant_type": "authorization_code",
-                    "redirect_uri": f"{os.getenv('BASE_URL')}/twitch/setup/callback"
-                }
-                async with session.post(TW_TOKEN_URL, data=payload) as resp:
-                    tokens = await resp.json()
-                    access_token = tokens.get("access_token")
-                    headers = {"Authorization": f"Bearer {access_token}", "Client-Id": TW_CLIENT_ID}
-                    async with session.get(f"{TW_API_URL}/users", headers=headers) as r2:
-                        data = await r2.json()
-                        user = data["data"][0]
+        headers = {"Authorization": f"Bearer {token_data['access_token']}", "Client-Id": self.cfg.client_id}
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://api.twitch.tv/helix/users", headers=headers) as resp:
+                user = (await resp.json())["data"][0]
 
-            slug = user["login"].lower()
-            encrypted_token = self.cipher.encrypt(access_token)
-            await self.db.exec(
-                """INSERT INTO broadcasters (slug, owner_telegram_id, twitch_name, access_token)
-                   VALUES (%s,%s,%s,%s)
-                   ON CONFLICT (slug) DO UPDATE
-                   SET access_token=excluded.access_token""",
-                slug, state_row["telegram_id"], user["display_name"], encrypted_token
-            )
+        slug = user["login"].lower()
+        encrypted = self.cipher.encrypt(token_data["access_token"])
+        new_token = self.cipher.encrypt(token_data["refresh_token"])
 
-            link = f"{os.getenv('BASE_URL')}/dashboard/{slug}?token={encrypted_token}"
-            return web.Response(text=f"✅ Canal {slug} vinculado. Accede a tu dashboard: {link}")
-        except Exception as e:
-            logging.error(f"Error en twitch_callback_setup: {e}")
-            return web.Response(status=500, text="Error interno en la vinculación.")
+        await self.db.exec("""
+            INSERT INTO broadcasters (slug, twitch_id, twitch_name, access_token, refresh_token, owner_telegram_id, dashboard_token)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (slug) DO UPDATE SET
+                access_token=EXCLUDED.access_token,
+                refresh_token=EXCLUDED.refresh_token
+        """, slug, user["id"], user["display_name"], encrypted, new_token, None, "")
+
+        return web.Response(text="✅ Canal vinculado correctamente. Ya puedes usar /setgroup en tu grupo de Telegram.")
+
+    # ---------------------------
+    # Callback del usuario (/twitch/callback)
+    # ---------------------------
+    @safe_exec()
+    async def twitch_callback_user(self, request: web.Request):
+        params = request.rel_url.query
+        code = params.get("code")
+        state = params.get("state")
+        if not code or not state:
+            return web.Response(text="❌ Parámetros inválidos.", status=400)
+
+        token_data = await self._exchange_code(code)
+        if not token_data:
+            return web.Response(text="❌ Error autenticando con Twitch.", status=400)
+
+        return web.Response(text="✅ Vinculación completada correctamente. Ya puedes volver a Telegram.")
+
+    async def _exchange_code(self, code):
+        data = {
+            "client_id": self.cfg.client_id,
+            "client_secret": self.cfg.client_secret,
+            "grant_type": "authorization_code",
+            "redirect_uri": f"{self.cfg.base_url}/twitch/setup/callback",
+            "code": code,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://id.twitch.tv/oauth2/token", data=data) as resp:
+                if resp.status != 200:
+                    logging.error(f"Twitch token exchange failed: {await resp.text()}")
+                    return None
+                return await resp.json()
