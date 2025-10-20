@@ -1,55 +1,53 @@
-# app/db.py
+import os
 import logging
-import asyncio
+import psycopg
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class Config:
+    def __init__(self):
+        self.token = os.getenv("TELEGRAM_BOT_TOKEN")
+        self.base_url = os.getenv("BASE_URL")
+        self.client_id = os.getenv("OAUTH_CLIENT_ID")
+        self.client_secret = os.getenv("OAUTH_CLIENT_SECRET")
+        self.bot_username = os.getenv("BOT_USERNAME")
+        self.db_url = os.getenv("DATABASE_URL")
+        self.port = int(os.getenv("PORT", "8080"))
 
 class Database:
     def __init__(self):
-        import os
-        self.dsn = os.getenv("DATABASE_URL")
-        self.pool = AsyncConnectionPool(self.dsn, open=False)
-        self.lock = asyncio.Lock()
+        self.cfg = Config()
+        self.pool = AsyncConnectionPool(
+            conninfo=self.cfg.db_url,
+            open=False,
+            max_size=10,
+            kwargs={"autocommit": True}
+        )
 
     async def open(self):
-        if not self.pool.is_open:
-            await self.pool.open()
-            logging.info("🗄️ Pool de base de datos abierto correctamente.")
+        await self.pool.open()
+        logging.info("🗄️ Conexión a base de datos abierta.")
 
-    async def exec(self, query, *params):
-        await self.open()
-        async with self.lock, self.pool.connection() as con:
-            try:
-                async with con.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                    await con.commit()
-            except Exception as e:
-                logging.error(f"❌ Error ejecutando query: {e}\nSQL: {query}")
-                raise
+    async def close(self):
+        await self.pool.close()
+        logging.info("🔒 Conexión a base de datos cerrada.")
 
     async def one(self, query, *params):
-        await self.open()
-        async with self.lock, self.pool.connection() as con:
-            try:
-                async with con.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                    row = await cur.fetchone()
-                    if not row:
-                        return None
-                    colnames = [desc[0] for desc in cur.description]
-                    return dict(zip(colnames, row))
-            except Exception as e:
-                logging.error(f"❌ Error en query (one): {e}\nSQL: {query}")
-                return None
+        async with self.pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(query.replace("?", "%s"), params)
+                return await cur.fetchone()
 
     async def all(self, query, *params):
-        await self.open()
-        async with self.lock, self.pool.connection() as con:
-            try:
-                async with con.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                    rows = await cur.fetchall()
-                    colnames = [desc[0] for desc in cur.description]
-                    return [dict(zip(colnames, r)) for r in rows]
-            except Exception as e:
-                logging.error(f"❌ Error en query (all): {e}\nSQL: {query}")
-                return []
+        async with self.pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(query.replace("?", "%s"), params)
+                return await cur.fetchall()
+
+    async def exec(self, query, *params):
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(query.replace("?", "%s"), params)
