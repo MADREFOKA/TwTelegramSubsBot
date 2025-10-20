@@ -1,13 +1,19 @@
-import aiohttp
-import logging
+import os
 import time
+import json
+import logging
+import requests
 from aiohttp import web
 from app.utils.safe_exec import safe_exec
 
+
 class OAuthHandlers:
-    def __init__(self, db, cfg, cipher):
-        self.db = db
+    def __init__(self, cfg, db, send_tg, refresh_token_fn, days_until_fn, cipher):
         self.cfg = cfg
+        self.db = db
+        self.send_tg = send_tg
+        self.refresh_twitch_token = refresh_token_fn
+        self.days_until = days_until_fn
         self.cipher = cipher
 
     # ---------------------------
