@@ -4,7 +4,7 @@ import time
 from aiohttp import web
 from app.utils.safe_exec import safe_exec
 
-class OAuthHandler:
+class OAuthHandlers:
     def __init__(self, db, cfg, cipher):
         self.db = db
         self.cfg = cfg
