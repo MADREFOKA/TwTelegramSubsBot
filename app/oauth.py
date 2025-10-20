@@ -25,14 +25,14 @@ class OAuthHandlers:
             code, state = q.get("code"), q.get("state")
             if not code or not state:
                 return web.Response(text="❌ Falta code/state.", status=400)
-
+    
             row = await self.db.one(
                 "SELECT * FROM oauth_states WHERE state=%s AND purpose='broadcaster_setup'",
                 state
             )
             if not row:
                 return web.Response(text="❌ Estado inválido o caducado.", status=400)
-
+    
             # Intercambio del código por tokens
             data = requests.post(self.cfg.TW_TOKEN, data={
                 "client_id": self.cfg.client_id,
@@ -41,56 +41,64 @@ class OAuthHandlers:
                 "grant_type": "authorization_code",
                 "redirect_uri": f"{self.cfg.base_url}/twitch/setup/callback"
             }, timeout=15).json()
-
+    
             if "access_token" not in data:
                 logging.error(f"❌ Error al obtener token: {data}")
                 return web.Response(text="❌ No se pudo obtener el token de Twitch.", status=400)
-
+    
             access_token = data["access_token"]
             refresh_token = data.get("refresh_token")
             expires_in = data.get("expires_in", 0)
-
+    
+            # Obtener info del canal
             headers = {
                 "Authorization": f"Bearer {access_token}",
-                "Client-Id": self.cfg.client_id
+                "Client-Id": self.cfg.client_id,
             }
             me = requests.get(f"{self.cfg.TW_API}/users", headers=headers, timeout=15).json()["data"][0]
             slug = me["login"].lower()
-
+            avatar = me.get("profile_image_url")
+    
             # Cifrar tokens
             enc_access = self.cipher.encrypt(access_token)
             enc_refresh = self.cipher.encrypt(refresh_token)
-
-            await self.db.exec("""
-                INSERT INTO broadcasters (
-                    broadcaster_id, owner_telegram_id, access_token, refresh_token,
-                    token_obtained_at, token_expires_in, slug
-                )
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (broadcaster_id)
-                DO UPDATE SET
+    
+            # Crear nuevo token para dashboard
+            import secrets
+            dashboard_token = secrets.token_urlsafe(32)
+    
+            # Guardar broadcaster
+            await self.db.exec(
+                """
+                INSERT INTO broadcasters (broadcaster_id, display_name, slug, access_token, refresh_token,
+                                          token_obtained_at, token_expires_in, owner_telegram_id, dashboard_token, profile_image_url)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (broadcaster_id) DO UPDATE SET
+                    display_name=EXCLUDED.display_name,
+                    slug=EXCLUDED.slug,
                     access_token=EXCLUDED.access_token,
                     refresh_token=EXCLUDED.refresh_token,
                     token_obtained_at=EXCLUDED.token_obtained_at,
                     token_expires_in=EXCLUDED.token_expires_in,
-                    slug=EXCLUDED.slug
-            """, me["id"], row["telegram_id"], enc_access, enc_refresh, int(time.time()), expires_in, slug)
-
-            # Generar dashboard privado
-            import secrets
-            new_token = secrets.token_urlsafe(32)
-            await self.db.exec("UPDATE broadcasters SET dashboard_token=%s WHERE broadcaster_id=%s", new_token, me["id"])
-            dash_link = f"{self.cfg.base_url}/dashboard/{slug}?token={new_token}"
-
+                    owner_telegram_id=EXCLUDED.owner_telegram_id,
+                    dashboard_token=EXCLUDED.dashboard_token,
+                    profile_image_url=EXCLUDED.profile_image_url
+                """,
+                me["id"], me["display_name"], slug,
+                enc_access, enc_refresh, int(time.time()), expires_in,
+                row["telegram_id"], dashboard_token, avatar
+            )
+    
+            dash_link = f"{self.cfg.base_url}/dashboard/{slug}?token={dashboard_token}"
             msg = setup_success(me["display_name"], self.cfg.bot_username, slug, dash_link)
             await self.send_tg(row["telegram_id"], msg, html=True)
-
+    
             return web.Response(
                 text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
                      "<h3>✅ Vinculación completada. Puedes volver a Telegram.</h3>",
                 content_type="text/html"
             )
-
+            
         except Exception as e:
             logging.exception("Error en twitch_callback_setup:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
