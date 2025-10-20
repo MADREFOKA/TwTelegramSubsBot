@@ -3,51 +3,95 @@ import logging
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-from dotenv import load_dotenv
 
-load_dotenv()
-
-class Config:
-    def __init__(self):
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN")
-        self.base_url = os.getenv("BASE_URL")
-        self.client_id = os.getenv("OAUTH_CLIENT_ID")
-        self.client_secret = os.getenv("OAUTH_CLIENT_SECRET")
-        self.bot_username = os.getenv("BOT_USERNAME")
-        self.db_url = os.getenv("DATABASE_URL")
-        self.port = int(os.getenv("PORT", "8080"))
 
 class Database:
     def __init__(self):
-        self.cfg = Config()
-        self.pool = AsyncConnectionPool(
-            conninfo=self.cfg.db_url,
-            open=False,
-            max_size=10,
-            kwargs={"autocommit": True}
-        )
+        self.url = os.getenv("DATABASE_URL")
+        if not self.url:
+            raise ValueError("❌ Falta DATABASE_URL")
 
-    async def open(self):
-        await self.pool.open()
-        logging.info("🗄️ Conexión a base de datos abierta.")
+        self.pool = AsyncConnectionPool(self.url, open=False, min_size=1, max_size=10)
 
-    async def close(self):
-        await self.pool.close()
-        logging.info("🔒 Conexión a base de datos cerrada.")
+    async def init(self):
+        """Crea tablas e índices si no existen (versión final en español)."""
+        CREATE_SQL = """
+        CREATE TABLE IF NOT EXISTS telegram_users (
+          telegram_id BIGINT PRIMARY KEY,
+          username TEXT,
+          linked_twitch_id TEXT,
+          last_check INTEGER
+        );
 
-    async def one(self, query, *params):
-        async with self.pool.connection() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
+        CREATE TABLE IF NOT EXISTS broadcasters (
+          broadcaster_id TEXT PRIMARY KEY,
+          owner_telegram_id BIGINT NOT NULL,
+          access_token TEXT NOT NULL,
+          refresh_token TEXT,
+          token_obtained_at INTEGER NOT NULL,
+          token_expires_in INTEGER NOT NULL,
+          group_id BIGINT,
+          invite_link TEXT,
+          free_group_id BIGINT,
+          free_invite_link TEXT,
+          slug TEXT,
+          dashboard_token TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS oauth_states (
+          state TEXT PRIMARY KEY,
+          telegram_id BIGINT NOT NULL,
+          purpose TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          broadcaster_id TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS privileged_users (
+          broadcaster_slug TEXT,
+          username TEXT,
+          PRIMARY KEY (broadcaster_slug, username)
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_logs (
+          id SERIAL PRIMARY KEY,
+          streamer_slug TEXT NOT NULL,
+          etiqueta_semana TEXT,
+          total_miembros INTEGER,
+          expulsados INTEGER,
+          sin_vinculo INTEGER,
+          fallos INTEGER,
+          fecha_auditoria TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_broadcaster_slug ON broadcasters(slug);
+        CREATE INDEX IF NOT EXISTS idx_oauth_telegram ON oauth_states(telegram_id);
+        """
+        async with self.pool.connection() as con:
+            async with con.cursor() as cur:
+                for stmt in [s.strip() for s in CREATE_SQL.split(";") if s.strip()]:
+                    await cur.execute(stmt)
+            await con.commit()
+        logging.info("🗄️ Esquema verificado correctamente.")
+
+    async def exec(self, query: str, *params):
+        try:
+            async with self.pool.connection() as con:
+                async with con.cursor() as cur:
+                    await cur.execute(query.replace("?", "%s"), params)
+                await con.commit()
+        except Exception as e:
+            logging.error(f"❌ Error ejecutando query: {e}\nSQL: {query}")
+
+    async def one(self, query: str, *params):
+        async with self.pool.connection() as con:
+            con.row_factory = dict_row
+            async with con.cursor() as cur:
                 await cur.execute(query.replace("?", "%s"), params)
                 return await cur.fetchone()
 
-    async def all(self, query, *params):
-        async with self.pool.connection() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
+    async def all(self, query: str, *params):
+        async with self.pool.connection() as con:
+            con.row_factory = dict_row
+            async with con.cursor() as cur:
                 await cur.execute(query.replace("?", "%s"), params)
                 return await cur.fetchall()
-
-    async def exec(self, query, *params):
-        async with self.pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(query.replace("?", "%s"), params)
