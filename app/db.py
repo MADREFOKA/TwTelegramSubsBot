@@ -1,115 +1,82 @@
 # app/db.py
-import os
 import logging
+import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-
 class Database:
-    def __init__(self):
-        self.url = os.getenv("DATABASE_URL")
-        if not self.url:
-            raise ValueError("❌ Falta DATABASE_URL")
-
-        # Crea el pool sin abrir (como recomienda psycopg >=3.2)
-        self.pool = AsyncConnectionPool(self.url, open=False)
+    def __init__(self, dsn):
+        self.dsn = dsn
+        self.pool: AsyncConnectionPool | None = None
 
     async def init(self):
-        """Inicializa las tablas e índices si no existen y abre la pool."""
+        """Crea el pool de conexión y abre la base de datos."""
         try:
-            await self.pool.open()  # 👈 Abrimos explícitamente la conexión
-            CREATE_SQL = """
-            CREATE TABLE IF NOT EXISTS telegram_users (
-              telegram_id BIGINT PRIMARY KEY,
-              username TEXT,
-              linked_twitch_id TEXT,
-              last_check INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS broadcasters (
-              broadcaster_id TEXT PRIMARY KEY,
-              owner_telegram_id BIGINT NOT NULL,
-              access_token TEXT NOT NULL,
-              refresh_token TEXT,
-              token_obtained_at INTEGER NOT NULL,
-              token_expires_in INTEGER NOT NULL,
-              group_id BIGINT,
-              invite_link TEXT,
-              free_group_id BIGINT,
-              free_invite_link TEXT,
-              slug TEXT,
-              dashboard_token TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS oauth_states (
-              state TEXT PRIMARY KEY,
-              telegram_id BIGINT NOT NULL,
-              purpose TEXT NOT NULL,
-              created_at INTEGER NOT NULL,
-              broadcaster_id TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS privileged_users (
-              broadcaster_id TEXT,
-              username TEXT,
-              PRIMARY KEY (broadcaster_id, username)
-            );
-
-            CREATE TABLE IF NOT EXISTS audit_logs (
-              id SERIAL PRIMARY KEY,
-              broadcaster_id TEXT NOT NULL,
-              group_id BIGINT NOT NULL,
-              streamer_slug TEXT,
-              etiqueta_semana TEXT,
-              total_miembros INTEGER,
-              expulsados INTEGER,
-              sin_vinculo INTEGER,
-              fallos INTEGER,
-              fecha_auditoria TIMESTAMP DEFAULT NOW()
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_broadcaster_slug ON broadcasters(slug);
-            CREATE INDEX IF NOT EXISTS idx_oauth_telegram ON oauth_states(telegram_id);
-            CREATE INDEX IF NOT EXISTS idx_audit_slug ON audit_logs(streamer_slug);
-            """
-
-            async with self.pool.connection() as con:
-                async with con.cursor() as cur:
-                    for stmt in [s.strip() for s in CREATE_SQL.split(";") if s.strip()]:
-                        await cur.execute(stmt)
+            self.pool = AsyncConnectionPool(self.dsn, kwargs={"autocommit": True, "row_factory": dict_row})
+            await self.pool.open()
             logging.info("🗄️ Esquema de base de datos verificado correctamente.")
         except Exception as e:
-            logging.error(f"❌ Error al inicializar la base de datos: {e}")
+            logging.error(f"❌ Error abriendo conexión con BD: {e}")
+            raise
+
+    async def _ensure_pool(self):
+        """Reabre el pool si está cerrado o en mal estado."""
+        if not self.pool or self.pool.closed:
+            logging.warning("🔁 Reabriendo pool de conexión a NeonDB...")
+            self.pool = AsyncConnectionPool(self.dsn, kwargs={"autocommit": True, "row_factory": dict_row})
+            await self.pool.open()
 
     async def exec(self, query: str, *params):
-        """Ejecuta una query sin retorno."""
+        """Ejecuta un INSERT/UPDATE/DELETE con reintento."""
+        await self._ensure_pool()
         try:
-            async with self.pool.connection() as con:
-                async with con.cursor() as cur:
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(query.replace("?", "%s"), params)
+        except psycopg.OperationalError as e:
+            logging.warning(f"⚠️ Reintentando exec por error operativo: {e}")
+            await self._ensure_pool()
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
                     await cur.execute(query.replace("?", "%s"), params)
         except Exception as e:
             logging.error(f"❌ Error ejecutando query: {e}\nSQL: {query}")
+            raise
 
     async def one(self, query: str, *params):
-        """Devuelve una fila o None."""
+        """Devuelve una sola fila."""
+        await self._ensure_pool()
         try:
-            async with self.pool.connection() as con:
-                con.row_factory = dict_row
-                async with con.cursor() as cur:
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(query.replace("?", "%s"), params)
+                    return await cur.fetchone()
+        except psycopg.OperationalError as e:
+            logging.warning(f"⚠️ Reintentando one por error operativo: {e}")
+            await self._ensure_pool()
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
                     await cur.execute(query.replace("?", "%s"), params)
                     return await cur.fetchone()
         except Exception as e:
             logging.error(f"❌ Error en query (one): {e}\nSQL: {query}")
-            return None
+            raise
 
     async def all(self, query: str, *params):
         """Devuelve todas las filas."""
+        await self._ensure_pool()
         try:
-            async with self.pool.connection() as con:
-                con.row_factory = dict_row
-                async with con.cursor() as cur:
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(query.replace("?", "%s"), params)
+                    return await cur.fetchall()
+        except psycopg.OperationalError as e:
+            logging.warning(f"⚠️ Reintentando all por error operativo: {e}")
+            await self._ensure_pool()
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
                     await cur.execute(query.replace("?", "%s"), params)
                     return await cur.fetchall()
         except Exception as e:
             logging.error(f"❌ Error en query (all): {e}\nSQL: {query}")
-            return []
+            raise
