@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Panel del Streamer</title>
+
+  <!-- Tailwind + Chart.js -->
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.4.3/dist/tailwind.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
@@ -36,7 +38,9 @@
   <header class="flex items-center space-x-4 mb-8">
     <div class="relative w-20 h-20">
       <div class="absolute inset-0 rounded-full border-[3px] border-transparent animate-spin-slow bg-gradient-to-tr from-purple-400 via-pink-500 to-indigo-500 bg-[length:200%_200%] opacity-70"></div>
-      <img id="avatar" src="{{ streamer.profile_image_url or '' }}" alt="Avatar"
+      <img id="avatar"
+           src="{{ streamer.profile_image_url or 'https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png' }}"
+           alt="Avatar"
            class="w-20 h-20 rounded-full border-2 border-[#0e0e10] relative z-10 object-cover">
     </div>
     <div>
