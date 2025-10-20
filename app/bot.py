@@ -176,8 +176,9 @@ class TwitchSubBot:
         # ─── Servidor web aiohttp ───────────────────────────────────────
         web_app = web.Application()
         web_app["bot"] = app
-        # Configurar plantillas Jinja2
-        aiohttp_jinja2.setup(web_app, loader=jinja2.FileSystemLoader("templates"))
+        # Configurar plantillas Jinja2 (ruta absoluta dentro del contenedor)
+        template_path = os.path.join(os.path.dirname(__file__), "templates")
+        aiohttp_jinja2.setup(web_app, loader=jinja2.FileSystemLoader(template_path))
 
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
