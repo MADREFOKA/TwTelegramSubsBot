@@ -4,6 +4,8 @@ import logging
 import asyncio
 import requests
 import aiohttp
+import aiohttp_jinja2
+import jinja2
 from datetime import datetime, timezone
 from aiohttp import web
 from telegram.ext import ApplicationBuilder, CommandHandler, ChatMemberHandler
@@ -174,6 +176,8 @@ class TwitchSubBot:
         # ─── Servidor web aiohttp ───────────────────────────────────────
         web_app = web.Application()
         web_app["bot"] = app
+        # Configurar plantillas Jinja2
+        aiohttp_jinja2.setup(web_app, loader=jinja2.FileSystemLoader("templates"))
 
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
