@@ -2,7 +2,7 @@
 import logging
 import time
 from datetime import datetime, timedelta
-from telegram import ChatMemberUpdated
+from telegram import ChatMemberUpdated, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 class Auditor:
@@ -37,12 +37,8 @@ class Auditor:
         b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
         if not b:
             return await update.message.reply_text("❌ Primero vincula tu canal con /setup")
-
-        await update.message.reply_text("🔍 Iniciando auditoría silenciosa...")
-
         try:
             await self.run_audit_for_broadcaster(b)
-            await update.message.reply_text("✅ Auditoría completada correctamente.")
         except Exception as e:
             logging.error(f"❌ Error en auditoría manual: {e}")
             await update.message.reply_text("⚠️ Error durante la auditoría.")
