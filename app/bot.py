@@ -47,15 +47,26 @@ class TwitchSubBot:
         self.auditor = Auditor(self.db, self.cfg, self.send_tg, self.refresh_twitch_token)
         self.dashboard = Dashboard(self.db)
 
-    async def send_tg(self, chat_id, text, md=False, html=False):
-        """Envía mensajes seguros a Telegram."""
+    # app/bot.py (fragmento dentro de la clase TwitchSubBot)
+    async def send_tg(self, chat_id, text, md=False, html=False, disable_preview=False, reply_markup=None):
+        """Envia mensajes a Telegram de forma segura."""
+        import aiohttp
         url = f"https://api.telegram.org/bot{self.cfg.token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": disable_preview,
+            "disable_notification": False,
+        }
+    
         if md:
             payload["parse_mode"] = "Markdown"
         elif html:
             payload["parse_mode"] = "HTML"
-
+    
+        if reply_markup:
+            payload["reply_markup"] = reply_markup.to_dict()
+    
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=10) as resp:
