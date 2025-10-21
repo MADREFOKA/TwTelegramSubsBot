@@ -8,9 +8,8 @@ import aiohttp_jinja2
 import jinja2
 from datetime import datetime, timezone
 from aiohttp import web
-from telegram.ext import ApplicationBuilder, CommandHandler, ChatMemberHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ChatMemberHandler, CallbackQueryHandler
 from telegram import Update
-
 from app.db import Database
 from app.security import TokenCipher
 from app.commands import Commands
@@ -145,8 +144,8 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("setfreegroup", self.cmds.cmd_setfreegroup))
         app.add_handler(CommandHandler("regendashlink", self.cmds.cmd_regendashlink))
         app.add_handler(CommandHandler("auditnow", self.auditor.cmd_auditnow))
-        app.add_handler(ChatMemberHandler(self.auditor.on_member_update,
-                                          chat_member_types=["member", "administrator", "left", "kicked"]))
+        app.add_handler(ChatMemberHandler(self.auditor.on_member_update, chat_member_types=["member", "administrator", "left", "kicked"]))
+        app.add_handler(CallbackQueryHandler(self.cmds.on_callback, pattern="^guide_usage$"))
 
         try:
             self.auditor.schedule_weekly_audit(app.job_queue)
