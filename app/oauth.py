@@ -3,15 +3,7 @@ import time
 import logging
 import requests
 from aiohttp import web
-
-from app.utils.messages import (
-    setup_success,
-    viewer_is_owner,
-    viewer_is_sub,
-    viewer_not_sub,
-    guide_message
-)
-
+from app.utils.messages import (setup_success, viewer_is_owner, viewer_is_sub, viewer_not_sub)
 
 class OAuthHandlers:
     def __init__(self, cfg, db, send_tg, refresh_twitch_token, days_until, cipher):
