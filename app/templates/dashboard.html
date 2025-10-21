@@ -1,192 +1,222 @@
 <!DOCTYPE html>
-<html lang="es" data-theme="dark">
+<html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{ streamer.display_name or "Dashboard" }} — Auditorías</title>
+  <meta charset="UTF-8" />
+  <title>{{ streamer.display_name }} | Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body {
       background-color: #0e0e10;
-      color: #efeff1;
-      font-family: "Inter", "Segoe UI", sans-serif;
+      color: #f5f5f5;
+      font-family: "Inter", sans-serif;
       margin: 0;
       padding: 0;
+      text-align: center;
+    }
+    .header {
       display: flex;
-      flex-direction: column;
+      justify-content: center;
       align-items: center;
+      background: #18181b;
+      padding: 20px;
+      flex-wrap: wrap;
+      gap: 20px;
+      border-bottom: 2px solid #9146ff33;
     }
-    header {
-      text-align: center;
-      margin-top: 30px;
-    }
-    header img {
-      width: 96px;
-      height: 96px;
-      border-radius: 50%;
-      border: 3px solid #9146FF;
-      background-color: #18181b;
+    .header img {
+      width: 72px;
+      height: 72px;
+      border-radius: 12px;
       object-fit: cover;
+      background-color: #9146ff11;
     }
-    h1 {
-      margin: 10px 0 5px;
-      font-size: 1.8em;
+    .header .info {
+      text-align: left;
     }
-    h2 {
-      margin: 30px 0 10px;
-      font-size: 1.3em;
+    .header h1 {
+      margin: 0;
       color: #bf94ff;
     }
-    .container {
-      width: 70%;
-      max-width: 900px;
-      background-color: #18181b;
-      border-radius: 10px;
-      box-shadow: 0 0 10px #00000066;
-      padding: 20px 30px;
-      margin-bottom: 30px;
+    .header p {
+      color: #aaa;
+      margin: 2px 0;
     }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: center;
-      margin-top: 10px;
+    .header button {
+      background: #9146ff;
+      border: none;
+      color: white;
+      padding: 10px 18px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s;
     }
-    th, td {
-      padding: 10px;
+    .header button:hover {
+      background: #7d36e2;
     }
-    th {
+    .metrics {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      flex-wrap: wrap;
+      margin: 30px 0;
+    }
+    .metric {
+      background: #1f1f23;
+      padding: 20px;
+      border-radius: 12px;
+      width: 200px;
+      box-shadow: 0 0 10px #00000033;
+    }
+    .metric h3 {
       color: #bf94ff;
-      border-bottom: 1px solid #3a3a3d;
+      margin-bottom: 5px;
     }
-    td {
-      border-bottom: 1px solid #2b2b2d;
+    .metric span {
+      font-size: 1.6em;
+      font-weight: 700;
     }
     .chart-container {
-      width: 70%;
-      max-width: 900px;
-      background-color: #18181b;
-      border-radius: 10px;
-      box-shadow: 0 0 10px #00000066;
-      padding: 20px 30px;
-      margin-bottom: 40px;
+      width: 60%;
+      max-width: 700px;
+      margin: 0 auto 40px auto;
+      background: #18181b;
+      padding: 20px;
+      border-radius: 12px;
     }
-    canvas {
-      width: 100% !important;
-      height: 250px !important; /* 🔹 Mucho más pequeña */
+    table {
+      width: 70%;
+      margin: 0 auto 50px auto;
+      border-collapse: collapse;
+      background: #1f1f23;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 12px 15px;
+    }
+    th {
+      background: #9146ff33;
+      color: #fff;
+    }
+    tr:nth-child(even) {
+      background: #2a2a2e;
+    }
+    tr:hover {
+      background: #3a3a3f;
+    }
+    footer {
+      color: #7f7f7f;
+      font-size: 0.8em;
+      margin: 30px 0;
+    }
+    #toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #9146ff;
+      color: white;
+      padding: 10px 20px;
+      border-radius: 6px;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    #toast.show {
+      opacity: 1;
     }
   </style>
 </head>
 <body>
-
-  <header>
-    <img src="{{ streamer.profile_image_url or 'https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png' }}">
-    <h1>{{ streamer.display_name or streamer.slug }}</h1>
-    <p>@{{ streamer.slug }}</p>
-  </header>
-
-  <div class="container">
-    <h2>Resumen de la última auditoría</h2>
-    {% if resumen %}
-    <table>
-      <tr>
-        <th>Miembros totales</th>
-        <th>Expulsados</th>
-        <th>Sin vínculo</th>
-        <th>Fallos</th>
-      </tr>
-      <tr>
-        <td>{{ resumen.total_miembros }}</td>
-        <td>{{ resumen.expulsados }}</td>
-        <td>{{ resumen.sin_vinculo }}</td>
-        <td>{{ resumen.fallos }}</td>
-      </tr>
-    </table>
-    {% else %}
-    <p>No hay datos de auditorías todavía.</p>
-    {% endif %}
+  <div class="header">
+    <img src="{{ streamer.profile_image_url or 'https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png' }}" alt="avatar" />
+    <div class="info">
+      <h1>{{ streamer.display_name }}</h1>
+      <p>@{{ streamer.slug }}</p>
+    </div>
+    <button onclick="runAudit()">🔁 Forzar auditoría</button>
   </div>
 
+  {% if resumen %}
+  <div class="metrics">
+    <div class="metric"><h3>Miembros</h3><span>{{ resumen.total_miembros }}</span></div>
+    <div class="metric"><h3>Expulsados</h3><span>{{ resumen.expulsados }}</span></div>
+    <div class="metric"><h3>Sin vínculo</h3><span>{{ resumen.sin_vinculo }}</span></div>
+    <div class="metric"><h3>Fallos</h3><span>{{ resumen.fallos }}</span></div>
+  </div>
+  {% endif %}
+
   <div class="chart-container">
-    <h2>Historial de auditorías</h2>
     <canvas id="auditChart"></canvas>
   </div>
 
-  <div class="container">
-    <h2>Detalles de auditorías</h2>
-    {% if logs %}
-    <table>
-      <tr>
-        <th>Semana</th>
-        <th>Miembros</th>
-        <th>Expulsados</th>
-        <th>Sin vínculo</th>
-        <th>Fallos</th>
-        <th>Fecha</th>
-      </tr>
-      {% for log in logs %}
-      <tr>
-        <td>{{ log.etiqueta_semana or '-' }}</td>
-        <td>{{ log.total_miembros }}</td>
-        <td>{{ log.expulsados }}</td>
-        <td>{{ log.sin_vinculo }}</td>
-        <td>{{ log.fallos }}</td>
-        <td>{{ log.fecha_auditoria.strftime("%d/%m/%Y") if log.fecha_auditoria else '-' }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-    {% else %}
-    <p>No hay auditorías registradas aún.</p>
-    {% endif %}
-  </div>
+  <table>
+    <tr>
+      <th>Semana</th>
+      <th>Miembros</th>
+      <th>Expulsados</th>
+      <th>Sin vínculo</th>
+      <th>Fallos</th>
+      <th>Fecha</th>
+    </tr>
+    {% for log in logs %}
+    <tr>
+      <td>{{ log.etiqueta_semana }}</td>
+      <td>{{ log.total_miembros }}</td>
+      <td>{{ log.expulsados }}</td>
+      <td>{{ log.sin_vinculo }}</td>
+      <td>{{ log.fallos }}</td>
+      <td>{{ log.fecha_auditoria.strftime("%d/%m/%Y %H:%M") }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <footer>
+    Hecho con 💜 por <b>TwTelegramSubsBot</b> — Gestión automática de subs de Twitch en Telegram.
+  </footer>
+
+  <div id="toast">🧹 Auditoría en curso...</div>
 
   <script>
-    const ctx = document.getElementById('auditChart').getContext('2d');
-    const labels = {{ logs | map(attribute='etiqueta_semana') | list | tojson }};
-    const expulsados = {{ logs | map(attribute='expulsados') | list | tojson }};
-    const sinVinculo = {{ logs | map(attribute='sin_vinculo') | list | tojson }};
-    const fallos = {{ logs | map(attribute='fallos') | list | tojson }};
-
-    new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          {
+    const logs = {{ logs|tojson }};
+    const ctx = document.getElementById('auditChart');
+    if (logs.length > 0) {
+      new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: logs.map(l => l.etiqueta_semana),
+          datasets: [{
+            label: 'Miembros',
+            data: logs.map(l => l.total_miembros),
+            borderColor: '#bf94ff',
+            fill: false,
+          },{
             label: 'Expulsados',
-            data: expulsados,
-            borderColor: '#ff4d4d',
-            backgroundColor: '#ff4d4d33',
-            tension: 0.3
-          },
-          {
-            label: 'Sin vínculo',
-            data: sinVinculo,
-            borderColor: '#ffd633',
-            backgroundColor: '#ffd63333',
-            tension: 0.3
-          },
-          {
-            label: 'Fallos',
-            data: fallos,
-            borderColor: '#ff66cc',
-            backgroundColor: '#ff66cc33',
-            tension: 0.3
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { labels: { color: '#efeff1' } }
+            data: logs.map(l => l.expulsados),
+            borderColor: '#ff4f4f',
+            fill: false,
+          }]
         },
-        scales: {
-          x: { ticks: { color: '#ccc' }, grid: { color: '#222' } },
-          y: { ticks: { color: '#ccc' }, grid: { color: '#222' } }
+        options: {
+          responsive: true,
+          scales: { x: { grid: { color: '#333' }}, y: { grid: { color: '#333' }}},
+          plugins: { legend: { labels: { color: '#fff' }}}
         }
-      }
-    });
-  </script>
+      });
+    }
 
+    function runAudit() {
+      const toast = document.getElementById("toast");
+      toast.classList.add("show");
+      fetch(`/dashboard/auditnow/{{ streamer.slug }}?token={{ request.query.token }}`)
+        .then(r => r.json())
+        .then(d => {
+          toast.textContent = "✅ Auditoría completada, recargando...";
+          setTimeout(() => location.reload(), 2000);
+        })
+        .catch(e => {
+          toast.textContent = "⚠️ Error al iniciar auditoría.";
+        });
+    }
+  </script>
 </body>
 </html>
