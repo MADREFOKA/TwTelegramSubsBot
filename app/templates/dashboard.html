@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <title>{{ streamer.display_name }} | Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body {
@@ -12,37 +12,34 @@
       font-family: "Inter", sans-serif;
       margin: 0;
       padding: 0;
-      text-align: center;
     }
     .header {
       display: flex;
-      justify-content: center;
       align-items: center;
+      justify-content: center;
+      gap: 15px;
+      flex-wrap: wrap;
       background: #18181b;
       padding: 20px;
-      flex-wrap: wrap;
-      gap: 20px;
-      border-bottom: 2px solid #9146ff33;
+      border-bottom: 1px solid #9146ff33;
     }
     .header img {
       width: 72px;
       height: 72px;
-      border-radius: 12px;
       object-fit: cover;
-      background-color: #9146ff11;
+      border-radius: 10px;
+      background-color: #9146ff22;
     }
-    .header .info {
+    .info {
       text-align: left;
     }
-    .header h1 {
-      margin: 0;
+    h1 {
       color: #bf94ff;
+      margin: 0;
     }
-    .header p {
-      color: #aaa;
-      margin: 2px 0;
-    }
-    .header button {
+    p { color: #aaa; margin: 4px 0; }
+
+    button {
       background: #9146ff;
       border: none;
       color: white;
@@ -50,60 +47,179 @@
       border-radius: 8px;
       cursor: pointer;
       transition: background 0.2s;
+      font-weight: 600;
     }
-    .header button:hover {
-      background: #7d36e2;
-    }
-    .metrics {
-      display: flex;
-      justify-content: center;
-      gap: 20px;
-      flex-wrap: wrap;
-      margin: 30px 0;
-    }
-    .metric {
-      background: #1f1f23;
-      padding: 20px;
-      border-radius: 12px;
-      width: 200px;
-      box-shadow: 0 0 10px #00000033;
-    }
-    .metric h3 {
-      color: #bf94ff;
-      margin-bottom: 5px;
-    }
-    .metric span {
-      font-size: 1.6em;
-      font-weight: 700;
-    }
-    .chart-container {
-      width: 60%;
-      max-width: 700px;
-      margin: 0 auto 40px auto;
-      background: #18181b;
-      padding: 20px;
-      border-radius: 12px;
-    }
-    table {
+    button:hover { background: #7d36e2; }
+
+    .dashboard-container {
       width: 70%;
-      margin: 0 auto 50px auto;
+      max-width: 900px;
+      margin: 30px auto;
+      text-align: center;
+    }
+
+    .summary-card {
+      background: #1f1f23;
+      padding: 25px;
+      border-radius: 12px;
+      margin-bottom: 25px;
+      box-shadow: 0 0 12px #00000033;
+    }
+
+    .summary-metrics {
+      display: flex;
+      justify-content: space-around;
+      flex-wrap: wrap;
+      gap: 15px;
+      margin-top: 10px;
+    }
+
+    .metric {
+      flex: 1 1 150px;
+      background: #2b2b30;
+      padding: 15px;
+      border-radius: 10px;
+    }
+
+    .metric h3 { color: #bf94ff; margin-bottom: 5px; }
+    .metric span { font-size: 1.6em; font-weight: 700; }
+
+    .chart-container {
+      background: #18181b;
+      border-radius: 12px;
+      padding: 20px;
+      width: 80%;
+      max-width: 650px;
+      margin: 0 auto 30px auto;
+    }
+
+    table {
+      width: 100%;
       border-collapse: collapse;
+      margin: 0 auto;
       background: #1f1f23;
       border-radius: 10px;
       overflow: hidden;
+      box-shadow: 0 0 10px #00000033;
     }
-    th, td {
-      padding: 12px 15px;
+
+    th, td { padding: 12px 15px; text-align: center; }
+    th { background: #9146ff33; color: #fff; }
+    tr:nth-child(even) { background: #2a2a2e; }
+    tr:hover { background: #3a3a3f; }
+
+    footer {
+      color: #7f7f7f;
+      font-size: 0.8em;
+      text-align: center;
+      margin: 40px 0;
     }
-    th {
-      background: #9146ff33;
-      color: #fff;
+
+    #toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #9146ff;
+      color: white;
+      padding: 10px 20px;
+      border-radius: 6px;
+      opacity: 0;
+      transition: opacity 0.4s ease;
     }
-    tr:nth-child(even) {
-      background: #2a2a2e;
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="{{ avatar_url }}" alt="avatar">
+    <div class="info">
+      <h1>{{ streamer.display_name }}</h1>
+      <p>@{{ streamer.slug }}</p>
+    </div>
+    <button onclick="runAudit()">🔁 Forzar auditoría</button>
+  </div>
+
+  <div class="dashboard-container">
+    {% if resumen %}
+    <div class="summary-card">
+      <h2>📊 Última auditoría</h2>
+      <div class="summary-metrics">
+        <div class="metric"><h3>Miembros</h3><span>{{ resumen.total_miembros }}</span></div>
+        <div class="metric"><h3>Expulsados</h3><span>{{ resumen.expulsados }}</span></div>
+        <div class="metric"><h3>Sin vínculo</h3><span>{{ resumen.sin_vinculo }}</span></div>
+        <div class="metric"><h3>Fallos</h3><span>{{ resumen.fallos }}</span></div>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="chart-container">
+      <canvas id="auditChart"></canvas>
+    </div>
+
+    <table>
+      <tr>
+        <th>Semana</th>
+        <th>Miembros</th>
+        <th>Expulsados</th>
+        <th>Sin vínculo</th>
+        <th>Fallos</th>
+        <th>Fecha</th>
+      </tr>
+      {% for log in logs %}
+      <tr>
+        <td>{{ log.etiqueta_semana }}</td>
+        <td>{{ log.total_miembros }}</td>
+        <td>{{ log.expulsados }}</td>
+        <td>{{ log.sin_vinculo }}</td>
+        <td>{{ log.fallos }}</td>
+        <td>{{ log.fecha_auditoria.strftime("%d/%m/%Y %H:%M") }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  <footer>Hecho con 💜 por <b>TwTelegramSubsBot</b> — Gestión automática de subs de Twitch en Telegram.</footer>
+
+  <div id="toast">🧹 Auditoría en curso...</div>
+
+  <script>
+    const logs = {{ logs|tojson }};
+    const ctx = document.getElementById('auditChart');
+    if (logs.length > 0) {
+      new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: logs.map(l => l.etiqueta_semana),
+          datasets: [
+            { label: 'Miembros', data: logs.map(l => l.total_miembros), borderColor: '#bf94ff', fill: false },
+            { label: 'Expulsados', data: logs.map(l => l.expulsados), borderColor: '#ff4f4f', fill: false }
+          ]
+        },
+        options: {
+          responsive: true,
+          aspectRatio: 1.8,
+          scales: { x: { grid: { color: '#333' }}, y: { grid: { color: '#333' }}},
+          plugins: { legend: { labels: { color: '#fff' }}}
+        }
+      });
     }
-    tr:hover {
-      background: #3a3a3f;
+
+    function runAudit() {
+      const toast = document.getElementById("toast");
+      toast.classList.add("show");
+      fetch(`/dashboard/auditnow/{{ streamer.slug }}?token={{ token }}`)
+        .then(r => r.json())
+        .then(d => {
+          toast.textContent = d.msg || "✅ Auditoría completada, recargando...";
+          if (d.status === "ok") setTimeout(() => location.reload(), 2500);
+        })
+        .catch(() => {
+          toast.textContent = "⚠️ Error al iniciar auditoría.";
+        });
+    }
+  </script>
+</body>
+</html>      background: #3a3a3f;
     }
     footer {
       color: #7f7f7f;
@@ -169,11 +285,7 @@
     </tr>
     {% endfor %}
   </table>
-
-  <footer>
-    Hecho con 💜 por <b>TwTelegramSubsBot</b> — Gestión automática de subs de Twitch en Telegram.
-  </footer>
-
+  
   <div id="toast">🧹 Auditoría en curso...</div>
 
   <script>
