@@ -5,7 +5,7 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 # ✅ Mensaje tras el /setup del streamer
 def setup_success(name, bot_username, slug, dash_link):
     msg = (
-        f"🎥 Canal: {name}\n"
+        f"🎥 Canal: *{name}*\n\n"
         f"🔗 Enlace viewers:\nhttps://t.me/{bot_username}?start={slug}\n\n"
         f"⚙️ Configuración:\n"
         f"/setgroup – Vincula grupo premium\n"
