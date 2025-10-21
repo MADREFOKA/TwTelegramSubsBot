@@ -1,82 +1,75 @@
-# app/db.py
 import logging
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 class Database:
-    def __init__(self, dsn):
+    def __init__(self, dsn: str):
         self.dsn = dsn
-        self.pool: AsyncConnectionPool | None = None
+        self.pool = None
 
     async def init(self):
-        """Crea el pool de conexión y abre la base de datos."""
-        try:
-            self.pool = AsyncConnectionPool(self.dsn, kwargs={"autocommit": True, "row_factory": dict_row})
-            await self.pool.open()
-            logging.info("🗄️ Esquema de base de datos verificado correctamente.")
-        except Exception as e:
-            logging.error(f"❌ Error abriendo conexión con BD: {e}")
-            raise
-
-    async def _ensure_pool(self):
-        """Reabre el pool si está cerrado o en mal estado."""
-        if not self.pool or self.pool.closed:
-            logging.warning("🔁 Reabriendo pool de conexión a NeonDB...")
-            self.pool = AsyncConnectionPool(self.dsn, kwargs={"autocommit": True, "row_factory": dict_row})
-            await self.pool.open()
+        """Inicializa el pool de conexiones"""
+        self.pool = AsyncConnectionPool(
+            conninfo=self.dsn,
+            min_size=1,
+            max_size=5,
+            kwargs={"sslmode": "require"},
+            open=True,
+        )
+        logging.info("✅ Pool de conexiones PostgreSQL inicializado.")
 
     async def exec(self, query: str, *params):
-        """Ejecuta un INSERT/UPDATE/DELETE con reintento."""
-        await self._ensure_pool()
-        try:
-            async with self.pool.connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-        except psycopg.OperationalError as e:
-            logging.warning(f"⚠️ Reintentando exec por error operativo: {e}")
-            await self._ensure_pool()
-            async with self.pool.connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-        except Exception as e:
-            logging.error(f"❌ Error ejecutando query: {e}\nSQL: {query}")
-            raise
+        for attempt in range(2):
+            try:
+                async with self.pool.connection() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(query.replace("?", "%s"), params)
+                        await conn.commit()
+                        return
+            except psycopg.OperationalError as e:
+                logging.warning(f"⚠️ Reintentando exec por error operativo: {e}")
+                await self.reconnect()
+        logging.error("❌ Exec falló después de reintentar conexión.")
 
     async def one(self, query: str, *params):
-        """Devuelve una sola fila."""
-        await self._ensure_pool()
-        try:
-            async with self.pool.connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                    return await cur.fetchone()
-        except psycopg.OperationalError as e:
-            logging.warning(f"⚠️ Reintentando one por error operativo: {e}")
-            await self._ensure_pool()
-            async with self.pool.connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                    return await cur.fetchone()
-        except Exception as e:
-            logging.error(f"❌ Error en query (one): {e}\nSQL: {query}")
-            raise
+        for attempt in range(2):
+            try:
+                async with self.pool.connection() as conn:
+                    async with conn.cursor(row_factory=dict_row) as cur:
+                        await cur.execute(query.replace("?", "%s"), params)
+                        row = await cur.fetchone()
+                        return row
+            except psycopg.OperationalError as e:
+                logging.warning(f"⚠️ Reintentando one por error operativo: {e}")
+                await self.reconnect()
+        logging.error("❌ One falló después de reintentar conexión.")
 
     async def all(self, query: str, *params):
-        """Devuelve todas las filas."""
-        await self._ensure_pool()
+        for attempt in range(2):
+            try:
+                async with self.pool.connection() as conn:
+                    async with conn.cursor(row_factory=dict_row) as cur:
+                        await cur.execute(query.replace("?", "%s"), params)
+                        rows = await cur.fetchall()
+                        return rows
+            except psycopg.OperationalError as e:
+                logging.warning(f"⚠️ Reintentando all por error operativo: {e}")
+                await self.reconnect()
+        logging.error("❌ All falló después de reintentar conexión.")
+
+    async def reconnect(self):
+        """Reconecta el pool cuando una conexión SSL muere."""
         try:
-            async with self.pool.connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                    return await cur.fetchall()
-        except psycopg.OperationalError as e:
-            logging.warning(f"⚠️ Reintentando all por error operativo: {e}")
-            await self._ensure_pool()
-            async with self.pool.connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(query.replace("?", "%s"), params)
-                    return await cur.fetchall()
+            if self.pool:
+                await self.pool.close()
+            self.pool = AsyncConnectionPool(
+                conninfo=self.dsn,
+                min_size=1,
+                max_size=5,
+                kwargs={"sslmode": "require"},
+                open=True,
+            )
+            logging.info("🔄 Pool PostgreSQL reconectado correctamente.")
         except Exception as e:
-            logging.error(f"❌ Error en query (all): {e}\nSQL: {query}")
-            raise
+            logging.error(f"❌ Error al reconectar pool: {e}")
