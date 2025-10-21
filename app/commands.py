@@ -173,3 +173,19 @@ class Commands:
     # ───────────────────────────────
     def _gen_state(self, n=32):
         return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
+
+    # ───────────────────────────────
+    # 🧬 GUIA DE USO
+    # ───────────────────────────────
+    async def show_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.callback_query.answer()  # Quita el "relojito" de Telegram
+        guide_text = (
+            "📘 <b>Guía de uso de Twitch SubsBot</b>\n\n"
+            "1️⃣ Añade al bot como admin al grupo que desees usar.\n"
+            "2️⃣ Usa <code>/setgroup</code> para vincular tu grupo premium.\n"
+            "3️⃣ Usa <code>/setfreegroup</code> si también tienes un grupo gratuito.\n"
+            "4️⃣ El bot expulsará automáticamente a quienes no estén suscritos.\n"
+            "5️⃣ Revisa tus auditorías y estadísticas en el Dashboard 📊.\n"
+            "💡 Consejo: Usa <code>/priv_add</code> y <code>/priv_list</code> para gestionar tu whitelist."
+        )
+        await update.callback_query.message.reply_html(guide_text)
