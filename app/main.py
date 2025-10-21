@@ -5,13 +5,9 @@ import os
 from app.db import Database
 from app.bot import TwitchSubBot
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 async def main():
-    # 🗄️ Obtiene el DSN de las variables de entorno
     dsn = os.getenv("DATABASE_URL")
     if not dsn:
         raise RuntimeError("❌ Falta la variable DATABASE_URL en el entorno.")
