@@ -1,8 +1,10 @@
+# app/oauth.py
 import time
 import logging
 import requests
 from aiohttp import web
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Bot, InlineKeyboardMarkup, InlineKeyboardButton
+
 from app.utils.messages import setup_success, viewer_is_owner, viewer_is_sub, viewer_not_sub
 
 
@@ -15,6 +17,9 @@ class OAuthHandlers:
         self.days_until = days_until
         self.cipher = cipher
 
+    # ---------------------------------------------
+    # CALLBACK SETUP (STREAMER)
+    # ---------------------------------------------
     async def twitch_callback_setup(self, request: web.Request):
         try:
             q = request.rel_url.query
@@ -22,11 +27,14 @@ class OAuthHandlers:
             if not code or not state:
                 return web.Response(text="❌ Falta code/state.", status=400)
 
-            row = await self.db.one("SELECT * FROM oauth_states WHERE state=%s AND purpose='broadcaster_setup'", state)
+            row = await self.db.one(
+                "SELECT * FROM oauth_states WHERE state=%s AND purpose='broadcaster_setup'",
+                state
+            )
             if not row:
                 return web.Response(text="❌ Estado inválido o caducado.", status=400)
 
-            # Intercambio de tokens
+            # Intercambio del código por tokens
             data = requests.post(self.cfg.TW_TOKEN, data={
                 "client_id": self.cfg.client_id,
                 "client_secret": self.cfg.client_secret,
@@ -42,17 +50,27 @@ class OAuthHandlers:
             access_token = data["access_token"]
             refresh_token = data.get("refresh_token")
             expires_in = data.get("expires_in", 0)
-            headers = {"Authorization": f"Bearer {access_token}", "Client-Id": self.cfg.client_id}
+
+            # Obtener info del canal
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Client-Id": self.cfg.client_id,
+            }
             me = requests.get(f"{self.cfg.TW_API}/users", headers=headers, timeout=15).json()["data"][0]
             slug = me["login"].lower()
             avatar = me.get("profile_image_url")
 
-            import secrets
-            dashboard_token = secrets.token_urlsafe(32)
+            # Cifrar tokens
             enc_access = self.cipher.encrypt(access_token)
             enc_refresh = self.cipher.encrypt(refresh_token)
 
-            await self.db.exec("""
+            # Crear nuevo token para dashboard
+            import secrets
+            dashboard_token = secrets.token_urlsafe(32)
+
+            # Guardar broadcaster
+            await self.db.exec(
+                """
                 INSERT INTO broadcasters (broadcaster_id, display_name, slug, access_token, refresh_token,
                                           token_obtained_at, token_expires_in, owner_telegram_id, dashboard_token, profile_image_url)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -66,26 +84,81 @@ class OAuthHandlers:
                     owner_telegram_id=EXCLUDED.owner_telegram_id,
                     dashboard_token=EXCLUDED.dashboard_token,
                     profile_image_url=EXCLUDED.profile_image_url
-            """, me["id"], me["display_name"], slug, enc_access, enc_refresh, int(time.time()),
-               expires_in, row["telegram_id"], dashboard_token, avatar)
+                """,
+                me["id"], me["display_name"], slug,
+                enc_access, enc_refresh, int(time.time()), expires_in,
+                row["telegram_id"], dashboard_token, avatar
+            )
 
+            # ✅ Mensaje principal con botones inline
             dash_link = f"{self.cfg.base_url}/dashboard/{slug}?token={dashboard_token}"
-            msg = setup_success(me["display_name"], self.cfg.bot_username, slug, dash_link)
 
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📊 Abrir Dashboard", url=dash_link)]])
-            await self.send_tg(row["telegram_id"], msg, html=True)
-            await self.send_tg(row["telegram_id"], " ", html=True)  # salto visual
-            await self.send_tg(row["telegram_id"], "✅ Vinculación completada.", html=True)
+            msg = (
+                f"🎥 Canal: {me['display_name']}\n"
+                f"🔗 Enlace viewers:\nhttps://t.me/{self.cfg.bot_username}?start={slug}\n\n"
+                f"⚙️ Configuración:\n"
+                f"/setgroup – Vincula grupo premium\n"
+                f"/setfreegroup – Vincula grupo gratuito\n"
+                f"/auditnow – Limpia no-suscriptores\n"
+                f"/priv_add @usuario – Añade a whitelist\n"
+                f"/priv_remove @usuario – Quita de whitelist\n"
+                f"/priv_list – Lista whitelist\n"
+                f"/regendashlink – Regenera enlace dashboard"
+            )
 
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📊 Abrir Dashboard", url=dash_link),
+                    InlineKeyboardButton("🧭 Guía de uso", callback_data="show_guide")
+                ]
+            ])
+
+            bot = Bot(token=self.cfg.token)
+            await bot.send_message(
+                row["telegram_id"],
+                msg,
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+
+            # 🧭 Guía visual en HTML
+            guide_text = (
+                "<b>💡 Guía de uso — TwTelegramSubsBot</b>\n\n"
+                "⚙️ <b>Configuración inicial</b>\n"
+                "1️⃣ Usa <code>/setgroup</code> en tu <b>grupo premium</b> para vincularlo.\n"
+                "2️⃣ Usa <code>/setfreegroup</code> para vincular tu <b>grupo gratuito</b>.\n"
+                f"3️⃣ Comparte tu enlace de viewers:\n<code>https://t.me/{self.cfg.bot_username}?start={slug}</code>\n\n"
+                "🧹 <b>Auditorías automáticas</b>\n"
+                "• Ejecuta <code>/auditnow</code> para limpiar no-suscriptores.\n"
+                "• Se ejecuta también de forma automática cada semana.\n"
+                "• Los resultados se muestran en tu Dashboard.\n\n"
+                "👑 <b>Privilegios</b>\n"
+                "• <code>/priv_add @usuario</code> — Añade a whitelist.\n"
+                "• <code>/priv_remove @usuario</code> — Quita de whitelist.\n"
+                "• <code>/priv_list</code> — Lista la whitelist actual.\n\n"
+                "📊 <b>Dashboard</b>\n"
+                "Consulta tus auditorías, gráficas y estadísticas desde:\n"
+                f"<a href='{dash_link}'>📊 Abrir Dashboard</a>"
+            )
+
+            # Manejo del botón “🧭 Guía de uso”
+            async def handle_callback(update, context):
+                query = update.callback_query
+                if query.data == "show_guide":
+                    await query.answer()
+                    await query.message.reply_html(guide_text, disable_web_page_preview=True)
+
+            # Respuesta HTTP final
             return web.Response(
                 text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
                      "<h3>✅ Vinculación completada. Puedes volver a Telegram.</h3>",
                 content_type="text/html"
             )
+
         except Exception as e:
             logging.exception("Error en twitch_callback_setup:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
-            
+
     # ---------------------------------------------
     # CALLBACK USUARIO / VIEWER
     # ---------------------------------------------
@@ -145,17 +218,18 @@ class OAuthHandlers:
             )
             data_sub = r.json().get("data", [])
 
-            # Construcción del mensaje
+            # Construcción del mensaje con botones inline
             if me["id"] == b["broadcaster_id"]:
-                msg = viewer_is_owner(me["display_name"], b["slug"], b.get("invite_link"))
+                msg, keyboard = viewer_is_owner(me["display_name"], b["slug"], b.get("invite_link"))
             elif data_sub:
                 sub = data_sub[0]
                 renew, days = self.days_until(sub.get("ends_at", ""))
-                msg = viewer_is_sub(me["display_name"], b["slug"], renew, days, b.get("invite_link"))
+                msg, keyboard = viewer_is_sub(me["display_name"], b["slug"], renew, days, b.get("invite_link"))
             else:
-                msg = viewer_not_sub(me["display_name"], b["slug"], b.get("free_invite_link"))
+                msg, keyboard = viewer_not_sub(me["display_name"], b["slug"], b.get("free_invite_link"))
 
-            await self.send_tg(row["telegram_id"], msg, html=True)
+            bot = Bot(token=self.cfg.token)
+            await bot.send_message(row["telegram_id"], msg, parse_mode="HTML", reply_markup=keyboard)
 
             return web.Response(
                 text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
