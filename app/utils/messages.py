@@ -39,7 +39,7 @@ def viewer_is_owner(name, slug, invite_link):
 def viewer_is_sub(name, slug, invite_link):
     msg = (
         f"💜 ¡Gracias por tu apoyo, {name}!\n\n"
-        f"Eres <b>suscriptor</b> de *{slug}*.\n"
+        f"Eres <b>suscriptor</b> de <b>{slug}</b>.\n"
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Entrar al grupo premium", url=invite_link)]
@@ -50,7 +50,7 @@ def viewer_is_sub(name, slug, invite_link):
 def viewer_not_sub(name, slug, free_link):
     msg = (
         f"🤍 Hola {name}.\n\n"
-        f"No eres suscriptor activo de *{slug}*.\n"
+        f"No eres suscriptor activo de <b>{slug}</b>.\n"
         f"Puedes seguir el canal y participar en el grupo gratuito."
     )
     keyboard = InlineKeyboardMarkup([
