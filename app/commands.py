@@ -69,11 +69,11 @@ class Commands:
     @safe_exec()
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_chat.type != "private":
-            return
+            return await update.message.reply_text("⚠️ Usa este comando en privado.")
         user = update.effective_user
         args = context.args if context.args else []
         if not args:
-            return await update.message.reply_text("⚠️ Usa el enlace del streamer. Ejemplo: /start madrefoka")
+            return await update.message.reply_text("⚠️ Usa el enlace del streamer. Ejemplo: /start *nickdelstreamer* ")
     
         # 👇 El argumento puede ser slug o display_name (no lo forzamos a lower)
         arg = args[0]
@@ -106,7 +106,8 @@ class Commands:
         # 🔹 Mostrar display_name real, no slug
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💜 Verificar suscripción", url=url)]])
         await update.message.reply_text(
-            f"Pulsa el botón para vincular tu Twitch y comprobar si eres sub de *{b['display_name']}*:",
+            f"Pulsa el botón para vincular tu Twitch y comprobar si eres sub de {b['display_name']}: \n\n"
+            f"⚠️ La vinculación solo funciona desde PC si se tiene la doble verificación o autenticación.\n",
             reply_markup=keyboard, parse_mode="Markdown"
         )
         
@@ -130,10 +131,11 @@ class Commands:
 
         new_link = f"{self.cfg.base_url}/dashboard/{b['slug']}?token={b['dashboard_token']}"
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📊 Abrir Dashboard", url=new_link)]])
-        await update.message.reply_text(
-            f"✅ Grupo premium vinculado correctamente.\n\n💜 Enlace para viewers:\nhttps://t.me/{self.cfg.bot_username}?start={b['slug']}",
-            reply_markup=keyboard
-        )
+        try:
+            await update.message.delete()
+        except:
+            pass
+        await self.send_tg(b["owner_telegram_id"], f"✅ Grupo premium vinculado correctamente.\n\n💜 Enlace para viewers:\nhttps://t.me/{self.cfg.bot_username}?start={b['slug']}",)
 
     # ───────────────────────────────
     # 🎁 /SETFREEGROUP — GRUPO GRATUITO
@@ -152,7 +154,11 @@ class Commands:
             "UPDATE broadcasters SET free_group_id=%s, free_invite_link=%s WHERE broadcaster_id=%s",
             update.effective_chat.id, link.invite_link, b["broadcaster_id"]
         )
-        await update.message.reply_text("✅ Grupo gratuito vinculado correctamente.")
+        try:
+            await update.message.delete()
+        except:
+            pass
+        await self.send_tg(b["owner_telegram_id"], f"✅ Grupo gratuito vinculado correctamente.")
 
     # ───────────────────────────────
     # 🔐 /REGENDASHLINK
