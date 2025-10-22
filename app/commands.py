@@ -74,31 +74,42 @@ class Commands:
         args = context.args if context.args else []
         if not args:
             return await update.message.reply_text("⚠️ Usa el enlace del streamer. Ejemplo: /start madrefoka")
-
-        slug = args[0].lower()
-        b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
+    
+        # 👇 El argumento puede ser slug o display_name (no lo forzamos a lower)
+        arg = args[0]
+    
+        # Intentar buscar primero por broadcaster_id, luego display_name o slug
+        b = await self.db.one(
+            """
+            SELECT * FROM broadcasters
+            WHERE broadcaster_id=%s OR LOWER(slug)=%s OR LOWER(display_name)=LOWER(%s)
+            """,
+            arg, arg.lower(), arg
+        )
+    
         if not b:
             return await update.message.reply_text("❌ Este streamer no está vinculado.")
-
+    
         state = self._gen_state()
         await self.db.exec(
             "INSERT INTO oauth_states(state,telegram_id,purpose,created_at,broadcaster_id) VALUES(%s,%s,%s,%s,%s)",
             state, user.id, "user_link", int(time.time()), b["broadcaster_id"]
         )
-
+    
         redirect_uri = f"{self.cfg.base_url}/twitch/callback"
         scope = quote(" ".join(self.SCOPE_USER))
         url = (
             f"{self.TW_AUTH}?client_id={self.cfg.client_id}&redirect_uri={quote(redirect_uri)}"
             f"&response_type=code&scope={scope}&state={state}&force_verify=true"
         )
-
+    
+        # 🔹 Mostrar display_name real, no slug
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💜 Verificar suscripción", url=url)]])
         await update.message.reply_text(
-            f"Pulsa el botón para vincular tu Twitch y comprobar si eres sub de *{slug}*:",
+            f"Pulsa el botón para vincular tu Twitch y comprobar si eres sub de *{b['display_name']}*:",
             reply_markup=keyboard, parse_mode="Markdown"
         )
-
+        
     # ───────────────────────────────
     # 🏠 /SETGROUP — GRUPO PREMIUM
     # ───────────────────────────────
