@@ -16,8 +16,8 @@ class Commands:
         self.TW_API = cfg.TW_API
         self.TW_AUTH = cfg.TW_AUTH
         self.TW_TOKEN = cfg.TW_TOKEN
-        self.SCOPE_SETUP = ["channel:read:subscriptions", "user:read:email:subscriptions"]
-        self.SCOPE_USER = ["user:read:email", "user:read:subscriptions"]
+        self.SCOPE_SETUP = ["channel:read:subscriptions"]
+        self.SCOPE_USER = ["user:read:email:subscriptions"]
 
     # ───────────────────────────────
     # 🧩 UTILIDAD
