@@ -170,7 +170,7 @@ class OAuthHandlers:
                 params={"broadcaster_id": b["broadcaster_id"], "user_id": me["id"]},
                 timeout=15
             )
-            res_json = re.json()
+            res_json = r.json()
             data_sub = res_json.get("data", [])
             logging.info(f"Twitch API subscriptions response: {res_json}")
 
