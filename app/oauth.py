@@ -166,7 +166,7 @@ class OAuthHandlers:
 
             r = requests.get(
                 f"{self.cfg.TW_API}/subscriptions/user",
-                headers=headers_b,
+                headers=headers_user,
                 params={"broadcaster_id": b["broadcaster_id"], "user_id": me["id"]},
                 timeout=15
             )
