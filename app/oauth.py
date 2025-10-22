@@ -174,13 +174,13 @@ class OAuthHandlers:
 
             # Construcción del mensaje
             if me["id"] == b["broadcaster_id"]:
-                msg, keyboard = viewer_is_owner(me["display_name"], b["slug"], b.get("invite_link"))
+                msg, keyboard = viewer_is_owner(me["display_name"], b["display_name"], b.get("invite_link"))
             elif data_sub:
                 sub = data_sub[0]
                 renew, days = self.days_until(sub.get("ends_at", ""))
-                msg, keyboard = viewer_is_sub(me["display_name"], b["slug"], renew, days, b.get("invite_link"))
+                msg, keyboard = viewer_is_sub(me["display_name"], b["display_name"], renew, days, b.get("invite_link"))
             else:
-                msg, keyboard = viewer_not_sub(me["display_name"], b["slug"], b.get("free_invite_link"))
+                msg, keyboard = viewer_not_sub(me["display_name"], b["display_name"], b.get("free_invite_link"))
 
             await self.send_tg(row["telegram_id"], msg, html=True, reply_markup=keyboard)
 
