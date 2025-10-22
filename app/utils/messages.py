@@ -36,11 +36,10 @@ def viewer_is_owner(name, slug, invite_link):
     return msg, None
 
 # 💜 Mensaje si el usuario ES suscriptor
-def viewer_is_sub(name, slug, renew_date, days, invite_link):
+def viewer_is_sub(name, slug, invite_link):
     msg = (
         f"💜 ¡Gracias por tu apoyo, {name}!\n\n"
         f"Eres <b>suscriptor</b> de *{slug}*.\n"
-        f"Tu renovación será el <b>{renew_date}</b> (en {days} días)."
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Entrar al grupo premium", url=invite_link)]
