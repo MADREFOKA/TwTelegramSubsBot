@@ -5,7 +5,7 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 # ✅ Mensaje tras el /setup del streamer
 def setup_success(name, bot_username, slug, dash_link):
     msg = (
-        f"🎥 Canal: *{name}*\n\n"
+        f"🎥 Canal: <b>{name}</b>\n\n"
         f"🔗 Enlace viewers:\nhttps://t.me/{bot_username}?start={slug}\n\n"
         f"⚙️ Configuración:\n"
         f"/setgroup – Vincula grupo premium\n"
@@ -30,7 +30,7 @@ def setup_success(name, bot_username, slug, dash_link):
 def viewer_is_owner(name, slug, invite_link):
     msg = (
         f"👑 Hola {name}!\n\n"
-        f"Eres el propietario del canal *{slug}*.\n"
+        f"Eres el propietario del canal <b>{slug}</b>.\n"
         f"No necesitas verificarte como sub. 😊"
     )
     return msg, None
@@ -39,8 +39,8 @@ def viewer_is_owner(name, slug, invite_link):
 def viewer_is_sub(name, slug, renew_date, days, invite_link):
     msg = (
         f"💜 ¡Gracias por tu apoyo, {name}!\n\n"
-        f"Eres *suscriptor activo* de *{slug}*.\n"
-        f"Tu renovación será el *{renew_date}* (en {days} días)."
+        f"Eres <b>suscriptor</b> de *{slug}*.\n"
+        f"Tu renovación será el <b>{renew_date}</b> (en {days} días)."
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Entrar al grupo premium", url=invite_link)]
