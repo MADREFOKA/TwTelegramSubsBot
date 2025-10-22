@@ -181,7 +181,7 @@ class Commands:
         """Responde a botones inline con callback_data."""
         query = update.callback_query
         try:
-            await query.answer()D
+            await query.answer()
         except Exception:
             pass
     
