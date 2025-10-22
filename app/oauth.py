@@ -170,7 +170,9 @@ class OAuthHandlers:
                 params={"broadcaster_id": b["broadcaster_id"], "user_id": me["id"]},
                 timeout=15
             )
-            data_sub = r.json().get("data", [])
+            res_json = re.json()
+            data_sub = res_json.get("data", [])
+            logging.info(f"Twitch API subscriptions response: {res_json}")
 
             # Construcción del mensaje
             if me["id"] == b["broadcaster_id"]:
