@@ -178,9 +178,7 @@ class OAuthHandlers:
             if me["id"] == b["broadcaster_id"]:
                 msg, keyboard = viewer_is_owner(me["display_name"], b["display_name"], b.get("invite_link"))
             elif data_sub:
-                sub = data_sub[0]
-                renew, days = self.days_until(sub.get("ends_at", ""))
-                msg, keyboard = viewer_is_sub(me["display_name"], b["display_name"], renew, days, b.get("invite_link"))
+                msg, keyboard = viewer_is_sub(me["display_name"], b["display_name"], b.get("invite_link"))
             else:
                 msg, keyboard = viewer_not_sub(me["display_name"], b["display_name"], b.get("free_invite_link"))
 
@@ -188,7 +186,7 @@ class OAuthHandlers:
 
             return web.Response(
                 text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
-                     "<h3>✅ Verificación completada. Puedes volver a Telegram.</h3>",
+                     "<h3>✅ Verificación completa. Puedes volver a Telegram.</h3>",
                 content_type="text/html"
             )
 
