@@ -28,17 +28,19 @@ async def run_audit_for_slug(db: Database, slug: str):
         sin_vinculo = 0
         fallos = 0
 
+        broadcaster = await db.one("SELECT broadcaster_id, group_id FROM broadcasters WHERE slug=%s", slug)
+        if not broadcaster or not broadcaster["group_id"]:
+            logging.warning(f"⏭️ Saltando auditoría: {slug} no tiene grupo vinculado.")
+            return
+        
         await db.exec("""
             INSERT INTO audit_logs (
                 broadcaster_id, group_id, etiqueta_semana,
                 total_miembros, expulsados, sin_vinculo, fallos, streamer_slug
             )
-            VALUES (
-                (SELECT broadcaster_id FROM broadcasters WHERE slug=%s),
-                (SELECT group_id FROM broadcasters WHERE slug=%s),
-                %s, %s, %s, %s, %s, %s
-            )
-        """, slug, slug,
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+            broadcaster["broadcaster_id"], broadcaster["group_id"],
             datetime.date.today().strftime("Semana %W"),
             total, expulsados, sin_vinculo, fallos, slug
         )
