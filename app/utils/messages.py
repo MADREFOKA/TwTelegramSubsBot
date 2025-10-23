@@ -51,7 +51,7 @@ def viewer_not_sub(name, slug, free_link):
     msg = (
         f"🤍 Hola {name}.\n\n"
         f"No eres suscriptor activo de <b>{slug}</b>.\n"
-        f"Puedes seguir el canal y participar en el grupo gratuito."
+        f"Vuelve a intentarlo cuando te hayas suscrito."
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🆓 Entrar al grupo gratuito", url=free_link)]
