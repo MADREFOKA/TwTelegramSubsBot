@@ -1,54 +1,96 @@
+# app/auditor.py
 import logging
 import datetime
+import time
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from app.db import Database
 
-
 # ──────────────────────────────────────────────
-# 🔍 Ejecuta una auditoría para un streamer
+# 🔍 AUDITORÍA COMPLETA (elimina no subs, no vinculados e inactivos)
 # ──────────────────────────────────────────────
-async def run_audit_for_slug(db: Database, slug: str):
-    """
-    Ejecuta una auditoría básica: cuenta miembros en el grupo vinculado
-    del streamer. Los campos 'expulsados', 'sin_vinculo' y 'fallos'
-    se mantienen en 0 para compatibilidad futura.
-    """
+async def run_full_audit(bot, db: Database, slug: str):
     try:
-        # Buscar miembros asociados al grupo de este streamer
-        logs = await db.all("""
-            SELECT telegram_id
-            FROM group_members
-            WHERE group_id = (
-                SELECT group_id FROM broadcasters WHERE slug=%s
-            )
-        """, slug)
+        # Obtener streamer
+        b = await db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
+        if not b or not b.get("group_id"):
+            logging.warning(f"⏭️ Saltando auditoría: {slug} sin grupo vinculado.")
+            return
 
-        total = len(logs)
+        group_id = b["group_id"]
+        broadcaster_id = b["broadcaster_id"]
+        logging.info(f"🔎 Iniciando auditoría completa para {slug} ({group_id})")
+
+        # Obtener miembros y privilegiados
+        members = await db.all("""
+            SELECT telegram_id, username, is_subscribed, twitch_login, joined_at
+            FROM group_members
+            WHERE group_id=%s
+        """, group_id)
+        privileged = set(await db.get_privileged_ids(slug))
+
+        total = len(members)
         expulsados = 0
         sin_vinculo = 0
         fallos = 0
+        ahora = datetime.datetime.utcnow()
 
-        broadcaster = await db.one("SELECT broadcaster_id, group_id FROM broadcasters WHERE slug=%s", slug)
-        if not broadcaster or not broadcaster["group_id"]:
-            logging.warning(f"⏭️ Saltando auditoría: {slug} no tiene grupo vinculado.")
-            return
-        
+        for m in members:
+            tg_id = m["telegram_id"]
+            if tg_id in privileged or tg_id == b["owner_telegram_id"]:
+                continue  # No expulsar al streamer ni a privilegiados
+
+            motivo = None
+
+            # 🔹 Caso 1: no vinculado
+            if not m.get("twitch_login"):
+                motivo = "no vinculado"
+                sin_vinculo += 1
+
+            # 🔹 Caso 2: inactivo (más de 30 días sin actividad)
+            elif m.get("joined_at") and (ahora - m["joined_at"]).days > 30:
+                motivo = "inactivo"
+
+            # 🔹 Caso 3: no sub
+            elif not m.get("is_subscribed"):
+                motivo = "no sub"
+
+            # Expulsar si aplica
+            if motivo:
+                try:
+                    await bot.ban_chat_member(group_id, tg_id)
+                    await bot.unban_chat_member(group_id, tg_id)  # Para que pueda volver si se renueva sub
+                    expulsados += 1
+                    logging.info(f"🚫 Expulsado @{m.get('username')} ({tg_id}) — {motivo}")
+                except Exception as e:
+                    fallos += 1
+                    logging.warning(f"⚠️ No se pudo expulsar {tg_id}: {e}")
+
+        # Registrar auditoría
         await db.exec("""
             INSERT INTO audit_logs (
                 broadcaster_id, group_id, etiqueta_semana,
                 total_miembros, expulsados, sin_vinculo, fallos, streamer_slug
-            )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         """,
-            broadcaster["broadcaster_id"], broadcaster["group_id"],
-            datetime.date.today().strftime("Semana %W"),
+            broadcaster_id, group_id, datetime.date.today().strftime("Semana %W"),
             total, expulsados, sin_vinculo, fallos, slug
         )
-
-        logging.info(f"✅ Auditoría registrada para {slug} ({total} miembros).")
+        # ─────────────────────────────
+        # 🧹 LIMPIEZA DE oauth_states (registros viejos)
+        # ─────────────────────────────
+        try:
+            cutoff = int(time.time()) - 86400  # 24h = 86400 segundos
+            deleted = await db.exec(
+                "DELETE FROM oauth_states WHERE created_at < %s",
+                cutoff
+            )
+            logging.info("🧹 oauth_states limpiado (entradas >24h eliminadas).")
+        except Exception as e:
+            logging.warning(f"⚠️ Error limpiando oauth_states: {e}")
+        logging.info(f"✅ Auditoría completada para {slug}: {expulsados} expulsados.")
 
     except Exception as e:
-        logging.error(f"❌ Error en run_audit_for_slug({slug}): {e}")
+        logging.exception(f"❌ Error en run_full_audit({slug}): {e}")
         raise
 
 
@@ -66,60 +108,51 @@ class Auditor:
     # /auditnow — Manual desde Telegram
     # ─────────────────────────────
     async def cmd_auditnow(self, update, context):
-        """Auditoría manual: ejecuta en silencio y muestra solo el botón al Dashboard."""
+        """Ejecuta una auditoría completa del grupo."""
         user = update.effective_user
         chat_type = update.effective_chat.type
 
-        # Evitar uso en grupos
         if chat_type != "private":
-            return await update.message.reply_text("⚠️ Este comando solo puede usarse en chat privado.")
+            return await update.message.reply_text("⚠️ Usa este comando en privado.")
 
         b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
         if not b:
             return await update.message.reply_text("❌ No tienes ningún canal vinculado. Usa /setup primero.")
 
+        slug = b["slug"]
+        group_id = b.get("group_id")
+
+        if not group_id:
+            return await update.message.reply_text("⚠️ No tienes ningún grupo premium vinculado.")
+
         try:
-            await run_audit_for_slug(self.db, b["slug"])
+            await run_full_audit(context.bot, self.db, slug)
 
-            slug = b["slug"]
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📊 Abrir Dashboard", url=f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}")]
-            ])
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📊 Abrir Dashboard",
+                url=f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}")
+            ]])
 
-            await update.message.reply_text(
-                "✅ Auditoría finalizada. Revisa tu Dashboard.",
-                reply_markup=keyboard
-            )
+            await update.message.reply_text("✅ Auditoría completada. Revisa tu Dashboard.", reply_markup=keyboard)
 
         except Exception as e:
-            logging.error(f"Error en auditoría manual ({b['slug']}): {e}")
-            await update.message.reply_text("⚠️ Error al ejecutar la auditoría. Inténtalo más tarde.")
+            logging.error(f"Error en auditoría manual ({slug}): {e}")
+            await update.message.reply_text("⚠️ Error al ejecutar la auditoría.")
 
     # ─────────────────────────────
-    # on_member_update (placeholder)
-    # ─────────────────────────────
-    async def on_member_update(self, update, context):
-        """Futuro: controlará cuando los miembros se unen o salen de los grupos."""
-        pass
-
-    # ─────────────────────────────
-    # Auditoría semanal automática
+    # Auditoría automática semanal (cada lunes)
     # ─────────────────────────────
     def schedule_weekly_audit(self, job_queue):
-        """Programa una auditoría automática semanal."""
         from telegram.ext import CallbackContext
 
         async def _weekly_task(context: 'CallbackContext'):
             rows = await self.db.all("SELECT slug FROM broadcasters")
             for r in rows:
                 try:
-                    await run_audit_for_slug(self.db, r["slug"])
+                    await run_full_audit(context.bot, self.db, r["slug"])
                 except Exception as e:
                     logging.error(f"Error auditoría semanal {r['slug']}: {e}")
 
-        # 604800 segundos = 1 semana
-        try:
-            job_queue.run_repeating(_weekly_task, interval=604800, first=30)
-            logging.info("🗓️ Auditoría semanal programada correctamente.")
-        except Exception as e:
-            logging.warning(f"⚠️ No se pudo programar la auditoría semanal: {e}")
+        # Ejecutar todos los lunes a las 9:00 UTC
+        job_queue.run_repeating(_weekly_task, interval=604800, first=60)
+        logging.info("🗓️ Auditoría automática semanal programada (lunes).")

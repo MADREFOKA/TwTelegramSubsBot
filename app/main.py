@@ -16,6 +16,11 @@ async def main():
     await db.init()
 
     bot = TwitchSubBot(db)
+
+    # ⚙️ Guardamos la instancia del bot en su app web para acceso desde dashboard.py
+    if hasattr(bot, "web"):
+        bot.web["bot"] = bot
+
     await bot.start()
 
 if __name__ == "__main__":

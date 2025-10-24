@@ -1,8 +1,8 @@
+import os
 import logging
 import aiohttp_jinja2
 from aiohttp import web
-from app.auditor import run_audit_for_slug
-
+from app.auditor import run_full_audit
 
 class Dashboard:
     def __init__(self, db):
@@ -50,14 +50,24 @@ class Dashboard:
                 or "https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png"
             )
 
+            # Obtener lista de privilegiados
+            privileged = await self.db.all("""
+                SELECT username, telegram_id, added_at
+                FROM privileged_users
+                WHERE streamer_slug=%s
+                ORDER BY added_at DESC
+            """, slug)
+
             return {
                 "streamer": streamer,
                 "logs": logs,
                 "resumen": resumen,
                 "avatar_url": avatar_url,
-                "token": token
+                "token": token,
+                "privileged_users": privileged,
+                "base_url": os.getenv("BASE_URL")
             }
-
+            
         except Exception as e:
             logging.exception("Error mostrando dashboard:")
             raise web.HTTPInternalServerError(text=str(e))
@@ -82,7 +92,7 @@ class Dashboard:
                 )
 
             # Ejecutar auditoría manual
-            await run_audit_for_slug(self.db, b["slug"])
+            await run_full_audit(request.app["bot"], self.db, b["slug"])
 
             return web.json_response({
                 "status": "ok",

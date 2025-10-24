@@ -73,3 +73,109 @@ class Database:
             logging.info("🔄 Pool PostgreSQL reconectado correctamente.")
         except Exception as e:
             logging.error(f"❌ Error al reconectar pool: {e}")
+            
+    # ============================================================
+    # 👥 GROUP_MEMBERS — Guardar suscriptores
+    # ============================================================
+    async def add_group_member(self, group_id: int, streamer_slug: str, broadcaster_id: str,
+                               telegram_id: int, username: str = None, twitch_login: str = None):
+        """
+        Guarda o actualiza un usuario en la tabla group_members.
+        Se llama cuando el usuario se vincula y es sub del streamer.
+        """
+        try:
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("""
+                        INSERT INTO group_members (
+                            group_id, streamer_slug, broadcaster_id, telegram_id, username, twitch_login,
+                            is_subscribed, joined_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW())
+                        ON CONFLICT (group_id, telegram_id)
+                        DO UPDATE SET is_subscribed = TRUE, joined_at = NOW();
+                    """, (group_id, streamer_slug, broadcaster_id, telegram_id, username, twitch_login))
+                    await conn.commit()
+                    logging.info(f"✅ Guardado en group_members: {username} ({telegram_id}) → {streamer_slug}")
+        except Exception as e:
+            logging.error(f"❌ Error al guardar miembro en group_members: {e}")
+
+
+    # ============================================================
+    # 👑 PRIVILEGED_USERS — Añadir / Eliminar / Listar / Obtener
+    # ============================================================
+
+    async def add_privileged_user(self, streamer_slug: str, broadcaster_id: str,
+                                  telegram_id: int, username: str = None, added_by: int = None):
+        """
+        Añade un usuario privilegiado (protegido en auditorías).
+        Se usa en /priv_add.
+        """
+        try:
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("""
+                        INSERT INTO privileged_users (
+                            streamer_slug, broadcaster_id, telegram_id, username, added_by, added_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (broadcaster_id, telegram_id) DO NOTHING;
+                    """, (streamer_slug, broadcaster_id, telegram_id, username, added_by))
+                    await conn.commit()
+                    logging.info(f"✅ Usuario privilegiado añadido: {username} ({telegram_id})")
+        except Exception as e:
+            logging.error(f"❌ Error al añadir usuario privilegiado: {e}")
+
+
+    async def remove_privileged_user(self, streamer_slug: str, broadcaster_id: str, telegram_id: int):
+        """
+        Elimina un usuario privilegiado del streamer.
+        Se usa en /priv_delete o desde el dashboard.
+        """
+        try:
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("""
+                        DELETE FROM privileged_users
+                        WHERE streamer_slug=%s AND broadcaster_id=%s AND telegram_id=%s
+                    """, (streamer_slug, broadcaster_id, telegram_id))
+                    await conn.commit()
+                    logging.info(f"🗑️ Usuario privilegiado eliminado: {telegram_id}")
+        except Exception as e:
+            logging.error(f"❌ Error al eliminar usuario privilegiado: {e}")
+
+    async def list_privileged_users(self, streamer_slug: str):
+        """
+        Devuelve todos los usuarios privilegiados de un streamer (para dashboard o /priv_list).
+        """
+        try:
+            async with self.pool.connection() as conn:
+                async with conn.cursor(row_factory=dict_row) as cur:
+                    await cur.execute("""
+                        SELECT telegram_id, username, added_at
+                        FROM privileged_users
+                        WHERE streamer_slug=%s
+                        ORDER BY added_at DESC
+                    """, (streamer_slug,))
+                    rows = await cur.fetchall()
+                    return rows
+        except Exception as e:
+            logging.error(f"❌ Error al listar usuarios privilegiados: {e}")
+            return []
+
+    async def get_privileged_ids(self, streamer_slug: str) -> list[int]:
+        """
+        Obtiene todos los telegram_id de los usuarios privilegiados del streamer.
+        Usado en auditorías para no expulsarlos.
+        """
+        try:
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("""
+                        SELECT telegram_id FROM privileged_users WHERE streamer_slug=%s
+                    """, (streamer_slug,))
+                    rows = await cur.fetchall()
+                    return [r[0] for r in rows] if rows else []
+        except Exception as e:
+            logging.error(f"❌ Error al obtener privileged_ids: {e}")
+            return []

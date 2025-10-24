@@ -207,3 +207,54 @@ class Commands:
                 guide_message(),
                 disable_web_page_preview=True
             )
+    # ───────────────────────────────
+    # 👑 PRIVILEGIOS — Añadir / Eliminar / Listar
+    # ───────────────────────────────
+    @safe_exec()
+    async def cmd_priv_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Añade un usuario como privilegiado respondiendo a su mensaje."""
+        if not update.message or not update.effective_user:
+            return
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", update.effective_user.id)
+        if not b:
+            return await update.message.reply_text("❌ No tienes permiso para usar este comando.")
+
+        if not update.message.reply_to_message:
+            return await update.message.reply_text("👉 Usa este comando respondiendo al usuario que quieras añadir.")
+        target = update.message.reply_to_message.from_user
+
+        await self.db.add_privileged_user(b["slug"], b["broadcaster_id"], target.id, target.username, update.effective_user.id)
+        await update.message.reply_text(f"✅ {target.username or target.first_name} añadido como usuario privilegiado.")
+
+    @safe_exec()
+    async def cmd_priv_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Elimina a un usuario privilegiado."""
+        if not update.message or not update.effective_user:
+            return
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", update.effective_user.id)
+        if not b:
+            return await update.message.reply_text("❌ No tienes permiso para usar este comando.")
+        if not update.message.reply_to_message:
+            return await update.message.reply_text("👉 Usa este comando respondiendo al usuario que quieras eliminar.")
+        target = update.message.reply_to_message.from_user
+
+        await self.db.remove_privileged_user(b["slug"], b["broadcaster_id"], target.id)
+        await update.message.reply_text(f"🗑️ {target.username or target.first_name} eliminado de privilegiados.")
+
+    @safe_exec()
+    async def cmd_priv_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Lista todos los usuarios privilegiados del streamer."""
+        if not update.message or not update.effective_user:
+            return
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", update.effective_user.id)
+        if not b:
+            return await update.message.reply_text("❌ No tienes permiso para usar este comando.")
+
+        rows = await self.db.list_privileged_users(b["slug"])
+        if not rows:
+            return await update.message.reply_text("📭 No hay usuarios privilegiados actualmente.")
+        text = "👑 *Usuarios privilegiados:*\n\n" + "\n".join(
+            [f"• {r['username']} (ID: `{r['telegram_id']}`)" for r in rows]
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+        
