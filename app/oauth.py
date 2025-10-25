@@ -1,231 +1,214 @@
-# app/oauth.py
-import time
+# app/auditor.py
 import logging
+import datetime
 import requests
-from aiohttp import web
-from app.utils.messages import (setup_success, viewer_is_owner, viewer_is_sub, viewer_not_sub)
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from datetime import time as dtime
+from app.db import Database
+from app.security import TokenCipher
 
-class OAuthHandlers:
-    def __init__(self, cfg, db, send_tg, refresh_twitch_token, days_until, cipher):
-        self.cfg = cfg
+
+# ──────────────────────────────────────────────
+# 🔍 AUDITORÍA COMPLETA (verifica en Twitch por twitch_id)
+# ──────────────────────────────────────────────
+async def run_full_audit(bot, db: Database, slug: str):
+    """
+    Ejecuta una auditoría completa:
+    - Verifica en Twitch si cada miembro sigue siendo sub.
+    - Expulsa no subs, no vinculados o inactivos.
+    - Elimina de la BD los expulsados y actualiza is_subscribed.
+    """
+    try:
+        # Obtener streamer y grupo
+        b = await db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
+        if not b or not b.get("group_id"):
+            logging.warning(f"⏭️ Saltando auditoría: {slug} sin grupo vinculado.")
+            return
+
+        group_id = b["group_id"]
+        broadcaster_id = b["broadcaster_id"]
+        logging.info(f"🔎 Iniciando auditoría completa para {slug} ({group_id})")
+
+        # Obtener miembros registrados y privilegiados
+        members = await db.all("""
+            SELECT telegram_id, username, is_subscribed, twitch_id, joined_at
+            FROM group_members
+            WHERE group_id=%s
+        """, group_id)
+        privileged = set(await db.get_privileged_ids(slug))
+        privileged_ids = privileged | {b["owner_telegram_id"]}
+
+        total = len(members)
+        expulsados = 0
+        sin_vinculo = 0
+        fallos = 0
+        ahora = datetime.datetime.utcnow()
+
+        # Preparar token de Twitch (descifrar)
+        cipher = TokenCipher()
+        try:
+            access_token = cipher.decrypt(b["access_token"])
+        except Exception as e:
+            logging.warning(f"⚠️ Error descifrando token para {slug}: {e}")
+            access_token = None
+
+        headers_twitch = {
+            "Authorization": f"Bearer {access_token}",
+            "Client-Id": b.get("client_id") or "",
+        }
+
+        # ────────────────────────────────
+        # 🔹 Paso 1 — Revisar cada miembro
+        # ────────────────────────────────
+        for m in members:
+            tg_id = m["telegram_id"]
+            if tg_id in privileged_ids:
+                continue  # no tocar admins ni streamer
+
+            motivo = None
+
+            # 1️⃣ Sin vinculación de Twitch
+            if not m.get("twitch_id"):
+                motivo = "no vinculado"
+                sin_vinculo += 1
+
+            # 2️⃣ Verificar suscripción real en Twitch
+            elif b.get("broadcaster_id") and access_token:
+                try:
+                    resp = requests.get(
+                        "https://api.twitch.tv/helix/subscriptions/user",
+                        headers=headers_twitch,
+                        params={
+                            "broadcaster_id": b["broadcaster_id"],
+                            "user_id": m["twitch_id"],
+                        },
+                        timeout=10
+                    )
+                    data = resp.json().get("data", [])
+                    is_still_sub = len(data) > 0
+
+                    # Actualizar estado en BD
+                    await db.exec(
+                        "UPDATE telegram_users SET is_subscribed=%s WHERE telegram_id=%s",
+                        is_still_sub, tg_id
+                    )
+                    await db.exec(
+                        "UPDATE group_members SET is_subscribed=%s WHERE telegram_id=%s AND group_id=%s",
+                        is_still_sub, tg_id, group_id
+                    )
+
+                    if not is_still_sub:
+                        motivo = "ya no es sub"
+
+                except Exception as e:
+                    fallos += 1
+                    logging.warning(f"⚠️ Error verificando Twitch para {m.get('username')}: {e}")
+
+            # 3️⃣ Inactividad prolongada (>30 días)
+            elif m.get("joined_at") and (ahora - m["joined_at"]).days > 30:
+                motivo = "inactivo"
+
+            # ────────────────────────────────
+            # 🚫 Expulsión si aplica
+            # ────────────────────────────────
+            if motivo:
+                try:
+                    await bot.ban_chat_member(group_id, tg_id)
+                    await bot.unban_chat_member(group_id, tg_id)
+                    expulsados += 1
+                    logging.info(f"🚫 Expulsado @{m.get('username')} ({tg_id}) — {motivo}")
+
+                    # 🧹 Eliminar de BD
+                    await db.exec(
+                        "DELETE FROM group_members WHERE group_id=%s AND telegram_id=%s",
+                        group_id, tg_id
+                    )
+
+                except Exception as e:
+                    fallos += 1
+                    logging.warning(f"⚠️ No se pudo expulsar {tg_id}: {e}")
+
+        # ────────────────────────────────
+        # 🔹 Registrar auditoría
+        # ────────────────────────────────
+        await db.exec("""
+            INSERT INTO audit_logs (
+                broadcaster_id, group_id, etiqueta_semana,
+                total_miembros, expulsados, sin_vinculo, fallos, streamer_slug
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+            broadcaster_id, group_id, datetime.date.today().strftime("Semana %W"),
+            total, expulsados, sin_vinculo, fallos, slug
+        )
+
+        logging.info(f"✅ Auditoría completada para {slug}: {expulsados} expulsados.")
+
+    except Exception as e:
+        logging.exception(f"❌ Error en run_full_audit({slug}): {e}")
+        raise
+
+
+# ──────────────────────────────────────────────
+# 🧹 Clase principal de auditorías
+# ──────────────────────────────────────────────
+class Auditor:
+    def __init__(self, db, cfg, send_tg, refresh_twitch_token):
         self.db = db
+        self.cfg = cfg
         self.send_tg = send_tg
         self.refresh_twitch_token = refresh_twitch_token
-        self.days_until = days_until
-        self.cipher = cipher
 
-    # ───────────────────────────────────────────────
-    # CALLBACK SETUP (STREAMER)
-    # ───────────────────────────────────────────────
-    async def twitch_callback_setup(self, request: web.Request):
+    async def cmd_auditnow(self, update, context):
+        """Ejecuta una auditoría completa del grupo."""
+        user = update.effective_user
+        chat_type = update.effective_chat.type
+
+        if chat_type != "private":
+            return await update.message.reply_text("⚠️ Usa este comando en privado.")
+
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+        if not b:
+            return await update.message.reply_text("❌ No tienes ningún canal vinculado. Usa /setup primero.")
+
+        slug = b["slug"]
+        group_id = b.get("group_id")
+
+        if not group_id:
+            return await update.message.reply_text("⚠️ No tienes ningún grupo premium vinculado.")
+
         try:
-            q = request.rel_url.query
-            code, state = q.get("code"), q.get("state")
-            if not code or not state:
-                return web.Response(text="❌ Falta code/state.", status=400)
+            await run_full_audit(context.bot, self.db, slug)
 
-            row = await self.db.one(
-                "SELECT * FROM oauth_states WHERE state=%s AND purpose='broadcaster_setup'",
-                state
-            )
-            if not row:
-                return web.Response(text="❌ Estado inválido o caducado.", status=400)
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "📊 Abrir Dashboard",
+                url=f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}"
+            )]])
 
-            # Intercambio del código por tokens
-            data = requests.post(self.cfg.TW_TOKEN, data={
-                "client_id": self.cfg.client_id,
-                "client_secret": self.cfg.client_secret,
-                "code": code,
-                "grant_type": "authorization_code",
-                "redirect_uri": f"{self.cfg.base_url}/twitch/setup/callback"
-            }, timeout=15).json()
-
-            if "access_token" not in data:
-                logging.error(f"❌ Error al obtener token: {data}")
-                return web.Response(text="❌ No se pudo obtener el token de Twitch.", status=400)
-
-            access_token = data["access_token"]
-            refresh_token = data.get("refresh_token")
-            expires_in = data.get("expires_in", 0)
-
-            # Obtener info del canal
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Client-Id": self.cfg.client_id,
-            }
-            me = requests.get(f"{self.cfg.TW_API}/users", headers=headers, timeout=15).json()["data"][0]
-            slug = me["login"].lower()
-            avatar = me.get("profile_image_url")
-
-            # Cifrar tokens
-            enc_access = self.cipher.encrypt(access_token)
-            enc_refresh = self.cipher.encrypt(refresh_token)
-
-            # Crear nuevo token para dashboard
-            import secrets
-            dashboard_token = secrets.token_urlsafe(32)
-
-            # Guardar broadcaster
-            await self.db.exec(
-                """
-                INSERT INTO broadcasters (
-                    broadcaster_id, display_name, slug, access_token, refresh_token,
-                    token_obtained_at, token_expires_in, owner_telegram_id, dashboard_token, profile_image_url
-                )
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (broadcaster_id) DO UPDATE SET
-                    display_name=EXCLUDED.display_name,
-                    slug=EXCLUDED.slug,
-                    access_token=EXCLUDED.access_token,
-                    refresh_token=EXCLUDED.refresh_token,
-                    token_obtained_at=EXCLUDED.token_obtained_at,
-                    token_expires_in=EXCLUDED.token_expires_in,
-                    owner_telegram_id=EXCLUDED.owner_telegram_id,
-                    dashboard_token=EXCLUDED.dashboard_token,
-                    profile_image_url=EXCLUDED.profile_image_url
-                """,
-                me["id"], me["display_name"], slug,
-                enc_access, enc_refresh, int(time.time()), expires_in,
-                row["telegram_id"], dashboard_token, avatar
-            )
-
-            dash_link = f"{self.cfg.base_url}/dashboard/{slug}?token={dashboard_token}"
-
-            # Mensaje principal con botones inline (Dashboard + Guía)
-            msg, keyboard = setup_success(me["display_name"], self.cfg.bot_username, slug, dash_link)
-
-            # 👇 Enviar mensaje sin previsualización del enlace
-            await self.send_tg(
-                row["telegram_id"],
-                msg,
-                html=True,
-                disable_preview=True,
-                reply_markup=keyboard
-            )
-
-            return web.Response(
-                text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
-                     "<h3>✅ Vinculación completada. Puedes volver a Telegram.</h3>",
-                content_type="text/html"
-            )
+            await update.message.reply_text("✅ Auditoría completada. Revisa tu Dashboard.", reply_markup=keyboard)
 
         except Exception as e:
-            logging.exception("Error en twitch_callback_setup:")
-            return web.Response(text=f"❌ Error interno: {e}", status=500)
+            logging.error(f"Error en auditoría manual ({slug}): {e}")
+            await update.message.reply_text("⚠️ Error al ejecutar la auditoría.")
 
-        # ───────────────────────────────────────────────
-    # CALLBACK USUARIO / VIEWER
-    # ───────────────────────────────────────────────
-    async def twitch_callback_user(self, request: web.Request):
-        import secrets
+    def schedule_weekly_audit(self, job_queue):
+        """Programa la auditoría automática los lunes a las 09:00 UTC."""
+        from telegram.ext import CallbackContext
+
+        async def _weekly_task(context: 'CallbackContext'):
+            rows = await self.db.all("SELECT slug FROM broadcasters")
+            for r in rows:
+                try:
+                    await run_full_audit(context.bot, self.db, r["slug"])
+                except Exception as e:
+                    logging.error(f"Error auditoría semanal {r['slug']}: {e}")
+
         try:
-            q = request.rel_url.query
-            code, state = q.get("code"), q.get("state")
-            if not code or not state:
-                return web.Response(text="❌ Falta parámetros.", status=400)
-
-            # Buscar estado OAuth válido
-            row = await self.db.one(
-                "SELECT * FROM oauth_states WHERE state=%s AND purpose='user_link'",
-                state
+            job_queue.run_daily(
+                _weekly_task,
+                time=dtime(hour=9, minute=0),
+                days=(0,),  # Lunes
+                name="weekly_full_audit"
             )
-            if not row:
-                return web.Response(text="❌ Estado inválido o caducado.", status=400)
-
-            # Intercambio del código por token
-            data = requests.post(self.cfg.TW_TOKEN, data={
-                "client_id": self.cfg.client_id,
-                "client_secret": self.cfg.client_secret,
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": f"{self.cfg.base_url}/twitch/callback"
-            }, timeout=15).json()
-
-            if "access_token" not in data:
-                return web.Response(text=f"Error al obtener token: {data}", status=400)
-
-            access_token = data["access_token"]
-            headers_user = {
-                "Authorization": f"Bearer {access_token}",
-                "Client-Id": self.cfg.client_id
-            }
-
-            # Obtener datos del usuario de Twitch
-            me = requests.get(f"{self.cfg.TW_API}/users", headers=headers_user, timeout=15).json()["data"][0]
-
-            # Guardar usuario en telegram_users
-            await self.db.exec("""
-                INSERT INTO telegram_users (telegram_id, username, linked_twitch_id)
-                VALUES (%s,%s,%s)
-                ON CONFLICT (telegram_id)
-                DO UPDATE SET username=EXCLUDED.username, linked_twitch_id=EXCLUDED.linked_twitch_id
-            """, row["telegram_id"], me["login"], me["id"])
-
-            # Obtener broadcaster asociado
-            b = await self.db.one("SELECT * FROM broadcasters WHERE broadcaster_id=%s", row["broadcaster_id"])
-            if not b:
-                return web.Response(text="Streamer no encontrado.", status=400)
-
-            # Refrescar token si ha caducado
-            b_access = await self.refresh_twitch_token(b)
-            headers_b = {"Authorization": f"Bearer {b_access}", "Client-Id": self.cfg.client_id}
-
-            # Verificar si el usuario es sub
-            r = requests.get(
-                f"{self.cfg.TW_API}/subscriptions/user",
-                headers=headers_user,
-                params={"broadcaster_id": b["broadcaster_id"], "user_id": me["id"]},
-                timeout=15
-            )
-            res_json = r.json()
-            data_sub = res_json.get("data", [])
-            logging.info(f"Twitch API subscriptions response: {res_json}")
-
-            # ───────────────────────────────
-            # Detección del tipo de usuario
-            # ───────────────────────────────
-            if me["id"] == b["broadcaster_id"]:
-                msg, keyboard = viewer_is_owner(me["display_name"], b["display_name"], b.get("invite_link"))
-                is_sub = True
-            elif data_sub:
-                msg, keyboard = viewer_is_sub(me["display_name"], b["display_name"], b.get("invite_link"))
-                is_sub = True
-            else:
-                msg, keyboard = viewer_not_sub(me["display_name"], b["display_name"], b.get("free_invite_link"))
-                is_sub = False
-
-            # ───────────────────────────────
-            # Guardar en group_members
-            # ───────────────────────────────
-            try:
-                await self.db.exec("""
-                    INSERT INTO group_members (
-                        group_id, telegram_id, username, twitch_login,
-                        broadcaster_id, streamer_slug, joined_at, is_subscribed
-                    ) VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s)
-                    ON CONFLICT (group_id, telegram_id)
-                    DO UPDATE SET
-                        username=EXCLUDED.username,
-                        twitch_login=EXCLUDED.twitch_login,
-                        is_subscribed=EXCLUDED.is_subscribed,
-                        joined_at=NOW();
-                """,
-                    b["group_id"], row["telegram_id"], me["login"], me["login"],
-                    b["broadcaster_id"], b["slug"], is_sub
-                )
-                logging.info(f"💾 Guardado en group_members: @{me['login']} ({row['telegram_id']}) - sub={is_sub}")
-            except Exception as e:
-                logging.warning(f"⚠️ No se pudo guardar en group_members: {e}")
-
-            # Enviar mensaje final
-            await self.send_tg(row["telegram_id"], msg, html=True, reply_markup=keyboard)
-
-            return web.Response(
-                text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
-                     "<h3>✅ Verificación completa. Puedes volver a Telegram.</h3>",
-                content_type="text/html"
-            )
-
+            logging.info("🗓️ Auditoría semanal programada: cada lunes a las 09:00 UTC")
         except Exception as e:
-            logging.exception("Error en twitch_callback_user:")
-            return web.Response(text=f"❌ Error interno: {e}", status=500)
+            logging.warning(f"⚠️ No se pudo programar la auditoría semanal: {e}")
