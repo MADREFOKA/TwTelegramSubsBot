@@ -75,50 +75,23 @@
     </table>
   </div>
   <div id="toast">🧹 Auditoría en curso...</div>
-
   <script>
-    // Esperar a que la página cargue antes de definir la función
-    document.addEventListener("DOMContentLoaded", () => {
-      const logs = {{ logs|tojson }};
-      const ctx = document.getElementById('auditChart');
-      
-      if (logs.length > 0) {
-        new Chart(ctx, {
-          type: 'line',
-          data: {
-            labels: logs.map(l => l.etiqueta_semana),
-            datasets: [
-              { label: 'Miembros', data: logs.map(l => l.total_miembros), borderColor: '#bf94ff', fill: false },
-              { label: 'Expulsados', data: logs.map(l => l.expulsados), borderColor: '#ff4f4f', fill: false }
-            ]
-          },
-          options: {
-            responsive: true,
-            aspectRatio: 1.8,
-            animation: { duration: 800, easing: 'easeOutQuart' },
-            scales: { x: { grid: { color: '#333' }}, y: { grid: { color: '#333' }}},
-            plugins: { legend: { labels: { color: '#fff' }}, tooltip: { backgroundColor: '#18181b', borderColor: '#9146ff', borderWidth: 1 } }
-          }
-        });
-      }
-      // 🔁 Definir la función de auditoría dentro del DOMContentLoaded
-      window.runAudit = function() {
-        const toast = document.getElementById("toast");
-        toast.classList.add("show");
-        toast.textContent = "🧹 Ejecutando auditoría...";
-        // 👇 URL relativa, sin BASE_URL para evitar CORS
-        fetch(`/dashboard/auditnow/{{ streamer.slug }}?token={{ token }}`)
-          .then(r => r.json())
-          .then(d => {
-            toast.textContent = d.msg || "✅ Auditoría completada, recargando...";
-            if (d.status === "ok") setTimeout(() => location.reload(), 2500);
-          })
-          .catch(err => {
-            toast.textContent = "⚠️ Error ejecutando auditoría";
-            console.error("Error al ejecutar auditoría:", err);
-          });
-      };
-    });
-  </script>
+  function runAudit() {
+    const toast = document.getElementById("toast");
+    toast.textContent = "🧹 Ejecutando auditoría...";
+    toast.classList.add("show");
+
+    fetch("{{ base_url }}/dashboard/auditnow/{{ streamer.slug }}?token={{ token }}")
+      .then(r => r.json())
+      .then(d => {
+        toast.textContent = d.msg || "✅ Auditoría completada.";
+        if (d.status === "ok") setTimeout(() => location.reload(), 3000);
+      })
+      .catch(err => {
+        toast.textContent = "⚠️ Error ejecutando la auditoría.";
+        console.error(err);
+      });
+  }
+</script>
 </body>
 </html>
