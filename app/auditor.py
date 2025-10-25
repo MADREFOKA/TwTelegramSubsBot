@@ -12,7 +12,6 @@ from datetime import time as dtime
 # 🔍 AUDITORÍA COMPLETA — Expulsa no subs, no vinculados e inactivos
 # ──────────────────────────────────────────────
 async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_token=None):
-    bot = application.bot
     """
     Ejecuta una auditoría completa:
     - Expulsa usuarios no vinculados, no suscriptores o inactivos.
@@ -104,7 +103,7 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
                     await db.exec("DELETE FROM group_members WHERE telegram_id=%s", tg_id)
                     expulsados += 1
                     logging.info(f"🚫 Expulsado @{m.get('username')} ({tg_id}) — {motivo}")
-                    await asyncio.sleep(0.5)  # ⏳ Anti rate-limit
+                    await asyncio.sleep(1.2)  # ⏳ Anti rate-limit
                 except Exception as e:
                     fallos += 1
                     logging.warning(f"⚠️ No se pudo expulsar {tg_id}: {e}")
@@ -124,7 +123,7 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
                     await bot.unban_chat_member(group_id, user.id)
                     expulsados += 1
                     logging.info(f"🚫 Expulsado no registrado @{user.username} ({user.id})")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(1.2)
                 except Exception as e:
                     fallos += 1
                     logging.warning(f"⚠️ No se pudo expulsar no registrado {user.id}: {e}")
@@ -147,7 +146,6 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
     except Exception as e:
         logging.exception(f"❌ Error en run_full_audit({slug}): {e}")
         raise
-
 
 # ──────────────────────────────────────────────
 # 🧹 Clase principal de auditorías
