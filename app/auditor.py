@@ -5,19 +5,21 @@ import requests
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import time as dtime
 from app.db import Database
+from app.security import TokenCipher
 
 
 # ──────────────────────────────────────────────
-# 🔍 AUDITORÍA COMPLETA (con verificación real en Twitch)
+# 🔍 AUDITORÍA COMPLETA (verifica en Twitch por twitch_id)
 # ──────────────────────────────────────────────
 async def run_full_audit(bot, db: Database, slug: str):
     """
     Ejecuta una auditoría completa:
     - Verifica en Twitch si cada miembro sigue siendo sub.
     - Expulsa no subs, no vinculados o inactivos.
-    - Limpia su registro de group_members y actualiza telegram_users.is_subscribed.
+    - Elimina de la BD los expulsados y actualiza is_subscribed.
     """
     try:
+        # Obtener streamer y grupo
         b = await db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
         if not b or not b.get("group_id"):
             logging.warning(f"⏭️ Saltando auditoría: {slug} sin grupo vinculado.")
@@ -29,7 +31,7 @@ async def run_full_audit(bot, db: Database, slug: str):
 
         # Obtener miembros registrados y privilegiados
         members = await db.all("""
-            SELECT telegram_id, username, is_subscribed, twitch_login, joined_at
+            SELECT telegram_id, username, is_subscribed, twitch_id, joined_at
             FROM group_members
             WHERE group_id=%s
         """, group_id)
@@ -42,14 +44,12 @@ async def run_full_audit(bot, db: Database, slug: str):
         fallos = 0
         ahora = datetime.datetime.utcnow()
 
-        # Preparar token de Twitch
-        from app.security import TokenCipher
+        # Preparar token de Twitch (descifrar)
         cipher = TokenCipher()
         try:
             access_token = cipher.decrypt(b["access_token"])
-        except Exception:
-            logging.warning(f"⚠️ Token corrupto para {slug}, intentando refrescar...")
-            from app.bot import TwitchSubBot  # fallback si existe refresco
+        except Exception as e:
+            logging.warning(f"⚠️ Error descifrando token para {slug}: {e}")
             access_token = None
 
         headers_twitch = {
@@ -58,29 +58,29 @@ async def run_full_audit(bot, db: Database, slug: str):
         }
 
         # ────────────────────────────────
-        # 🔹 Paso 1 — Revisar cada miembro en Twitch
+        # 🔹 Paso 1 — Revisar cada miembro
         # ────────────────────────────────
         for m in members:
             tg_id = m["telegram_id"]
             if tg_id in privileged_ids:
-                continue
+                continue  # no tocar admins ni streamer
 
             motivo = None
 
-            # 1️⃣ Sin vinculación Twitch
-            if not m.get("twitch_login"):
+            # 1️⃣ Sin vinculación de Twitch
+            if not m.get("twitch_id"):
                 motivo = "no vinculado"
                 sin_vinculo += 1
 
-            # 2️⃣ Verificar en Twitch si sigue siendo sub
-            elif b.get("broadcaster_id"):
+            # 2️⃣ Verificar suscripción real en Twitch
+            elif b.get("broadcaster_id") and access_token:
                 try:
                     resp = requests.get(
                         "https://api.twitch.tv/helix/subscriptions/user",
                         headers=headers_twitch,
                         params={
                             "broadcaster_id": b["broadcaster_id"],
-                            "user_id": m["twitch_login"],
+                            "user_id": m["twitch_id"],
                         },
                         timeout=10
                     )
@@ -101,13 +101,16 @@ async def run_full_audit(bot, db: Database, slug: str):
                         motivo = "ya no es sub"
 
                 except Exception as e:
-                    logging.warning(f"⚠️ Error verificando sub {m.get('username')}: {e}")
+                    fallos += 1
+                    logging.warning(f"⚠️ Error verificando Twitch para {m.get('username')}: {e}")
 
-            # 3️⃣ Inactivo (más de 30 días)
+            # 3️⃣ Inactividad prolongada (>30 días)
             elif m.get("joined_at") and (ahora - m["joined_at"]).days > 30:
                 motivo = "inactivo"
 
-            # Expulsar si aplica
+            # ────────────────────────────────
+            # 🚫 Expulsión si aplica
+            # ────────────────────────────────
             if motivo:
                 try:
                     await bot.ban_chat_member(group_id, tg_id)
@@ -115,7 +118,7 @@ async def run_full_audit(bot, db: Database, slug: str):
                     expulsados += 1
                     logging.info(f"🚫 Expulsado @{m.get('username')} ({tg_id}) — {motivo}")
 
-                    # 🧹 Limpiar de la base
+                    # 🧹 Eliminar de BD
                     await db.exec(
                         "DELETE FROM group_members WHERE group_id=%s AND telegram_id=%s",
                         group_id, tg_id
