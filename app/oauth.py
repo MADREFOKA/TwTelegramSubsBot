@@ -113,16 +113,18 @@ class OAuthHandlers:
             logging.exception("Error en twitch_callback_setup:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
 
-    # ───────────────────────────────────────────────
+        # ───────────────────────────────────────────────
     # CALLBACK USUARIO / VIEWER
     # ───────────────────────────────────────────────
     async def twitch_callback_user(self, request: web.Request):
+        import secrets
         try:
             q = request.rel_url.query
             code, state = q.get("code"), q.get("state")
             if not code or not state:
                 return web.Response(text="❌ Falta parámetros.", status=400)
 
+            # Buscar estado OAuth válido
             row = await self.db.one(
                 "SELECT * FROM oauth_states WHERE state=%s AND purpose='user_link'",
                 state
@@ -130,6 +132,7 @@ class OAuthHandlers:
             if not row:
                 return web.Response(text="❌ Estado inválido o caducado.", status=400)
 
+            # Intercambio del código por token
             data = requests.post(self.cfg.TW_TOKEN, data={
                 "client_id": self.cfg.client_id,
                 "client_secret": self.cfg.client_secret,
@@ -146,9 +149,11 @@ class OAuthHandlers:
                 "Authorization": f"Bearer {access_token}",
                 "Client-Id": self.cfg.client_id
             }
+
+            # Obtener datos del usuario de Twitch
             me = requests.get(f"{self.cfg.TW_API}/users", headers=headers_user, timeout=15).json()["data"][0]
 
-            # Guardar usuario
+            # Guardar usuario en telegram_users
             await self.db.exec("""
                 INSERT INTO telegram_users (telegram_id, username, linked_twitch_id)
                 VALUES (%s,%s,%s)
@@ -156,14 +161,16 @@ class OAuthHandlers:
                 DO UPDATE SET username=EXCLUDED.username, linked_twitch_id=EXCLUDED.linked_twitch_id
             """, row["telegram_id"], me["login"], me["id"])
 
+            # Obtener broadcaster asociado
             b = await self.db.one("SELECT * FROM broadcasters WHERE broadcaster_id=%s", row["broadcaster_id"])
             if not b:
                 return web.Response(text="Streamer no encontrado.", status=400)
 
-            # Refrescar token si es necesario
+            # Refrescar token si ha caducado
             b_access = await self.refresh_twitch_token(b)
             headers_b = {"Authorization": f"Bearer {b_access}", "Client-Id": self.cfg.client_id}
 
+            # Verificar si el usuario es sub
             r = requests.get(
                 f"{self.cfg.TW_API}/subscriptions/user",
                 headers=headers_user,
@@ -174,14 +181,43 @@ class OAuthHandlers:
             data_sub = res_json.get("data", [])
             logging.info(f"Twitch API subscriptions response: {res_json}")
 
-            # Construcción del mensaje
+            # ───────────────────────────────
+            # Detección del tipo de usuario
+            # ───────────────────────────────
             if me["id"] == b["broadcaster_id"]:
                 msg, keyboard = viewer_is_owner(me["display_name"], b["display_name"], b.get("invite_link"))
+                is_sub = True
             elif data_sub:
                 msg, keyboard = viewer_is_sub(me["display_name"], b["display_name"], b.get("invite_link"))
+                is_sub = True
             else:
                 msg, keyboard = viewer_not_sub(me["display_name"], b["display_name"], b.get("free_invite_link"))
+                is_sub = False
 
+            # ───────────────────────────────
+            # Guardar en group_members
+            # ───────────────────────────────
+            try:
+                await self.db.exec("""
+                    INSERT INTO group_members (
+                        group_id, telegram_id, username, twitch_login,
+                        broadcaster_id, streamer_slug, joined_at, is_subscribed
+                    ) VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s)
+                    ON CONFLICT (group_id, telegram_id)
+                    DO UPDATE SET
+                        username=EXCLUDED.username,
+                        twitch_login=EXCLUDED.twitch_login,
+                        is_subscribed=EXCLUDED.is_subscribed,
+                        joined_at=NOW();
+                """,
+                    b["group_id"], row["telegram_id"], me["login"], me["login"],
+                    b["broadcaster_id"], b["slug"], is_sub
+                )
+                logging.info(f"💾 Guardado en group_members: @{me['login']} ({row['telegram_id']}) - sub={is_sub}")
+            except Exception as e:
+                logging.warning(f"⚠️ No se pudo guardar en group_members: {e}")
+
+            # Enviar mensaje final
             await self.send_tg(row["telegram_id"], msg, html=True, reply_markup=keyboard)
 
             return web.Response(
