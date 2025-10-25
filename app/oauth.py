@@ -153,13 +153,13 @@ class OAuthHandlers:
     
             # Guardar en telegram_users (twitch_id + login + estado inicial)
             await self.db.exec("""
-                INSERT INTO telegram_users (telegram_id, username, twitch_login, twitch_id, is_subscribed)
+                INSERT INTO telegram_users (telegram_id, username, twitch_login, linked_twitch_id, is_subscribed)
                 VALUES (%s,%s,%s,%s,FALSE)
                 ON CONFLICT (telegram_id)
                 DO UPDATE SET 
                     username=EXCLUDED.username,
                     twitch_login=EXCLUDED.twitch_login,
-                    twitch_id=EXCLUDED.twitch_id
+                    linked_twitch_id=EXCLUDED.linked_twitch_id
             """, row["telegram_id"], me["login"], me["login"], me["id"])
     
             # Buscar broadcaster vinculado
@@ -193,7 +193,7 @@ class OAuthHandlers:
             if is_sub:
                 await self.db.exec("""
                     INSERT INTO group_members (
-                        group_id, telegram_id, username, twitch_login, twitch_id,
+                        group_id, telegram_id, username, twitch_login, linked_twitch_id,
                         broadcaster_id, streamer_slug, is_subscribed, joined_at
                     )
                     SELECT group_id, %s, %s, %s, %s, %s, %s, TRUE, NOW()
@@ -202,7 +202,7 @@ class OAuthHandlers:
                     DO UPDATE SET 
                         is_subscribed=EXCLUDED.is_subscribed,
                         joined_at=EXCLUDED.joined_at,
-                        twitch_id=EXCLUDED.twitch_id
+                        linked_twitch_id=EXCLUDED.linked_twitch_id
                 """, row["telegram_id"], me["login"], me["login"], me["id"],
                      b["broadcaster_id"], b["slug"], b["broadcaster_id"])
     
