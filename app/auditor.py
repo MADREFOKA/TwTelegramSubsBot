@@ -12,6 +12,7 @@ from datetime import time as dtime
 # 🔍 AUDITORÍA COMPLETA — Expulsa no subs, no vinculados e inactivos
 # ──────────────────────────────────────────────
 async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_token=None):
+    bot = application.bot
     """
     Ejecuta una auditoría completa:
     - Expulsa usuarios no vinculados, no suscriptores o inactivos.
@@ -30,7 +31,7 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
 
         # Obtener miembros y privilegiados
         members = await db.all("""
-            SELECT telegram_id, username, twitch_id, twitch_login, is_subscribed, joined_at
+            SELECT telegram_id, username, linked_twitch_id, twitch_login, is_subscribed, joined_at
             FROM group_members
             WHERE group_id=%s
         """, group_id)
@@ -61,8 +62,8 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
                 continue
 
             motivo = None
-            twitch_id = m.get("twitch_id")
-            if not twitch_id:
+            linked_twitch_id = m.get("linked_twitch_id")
+            if not linked_twitch_id:
                 motivo = "no vinculado"
                 sin_vinculo += 1
             else:
@@ -71,7 +72,7 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
                     r = requests.get(
                         f"{cfg.TW_API}/subscriptions/user",
                         headers=headers_b,
-                        params={"broadcaster_id": broadcaster_id, "user_id": twitch_id},
+                        params={"broadcaster_id": broadcaster_id, "user_id": linked_twitch_id},
                         timeout=10
                     )
                     res_json = r.json()
@@ -172,7 +173,7 @@ class Auditor:
 
         slug = b["slug"]
         try:
-            await run_full_audit(context.bot, self.db, slug, self.cfg, self.refresh_twitch_token)
+            await run_full_audit(request.app["bot"], self.db, b["slug"], self.cfg, self.refresh_twitch_token)
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("📊 Abrir Dashboard",
                 url=f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}")]])
