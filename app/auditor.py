@@ -123,7 +123,7 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
                     await bot.unban_chat_member(group_id, user.id)
                     expulsados += 1
                     logging.info(f"🚫 Expulsado no registrado @{user.username} ({user.id})")
-                    await asyncio.sleep(0.5)  # ⏳ Anti rate-limit
+                    await asyncio.sleep(1)
                 except Exception as e:
                     fallos += 1
                     logging.warning(f"⚠️ No se pudo expulsar no registrado {user.id}: {e}")
@@ -197,10 +197,10 @@ class Auditor:
         try:
             job_queue.run_daily(
                 _weekly_task,
-                time=dtime(hour=9, minute=0),  # 09:00 UTC
-                days=(0,),  # Lunes
+                time=dtime(hour=7, minute=0),  # 09:00 UTC
+                days=(0,), 
                 name="weekly_full_audit"
             )
-            logging.info("🗓️ Auditoría semanal programada: cada lunes a las 09:00 UTC")
+            logging.info("🗓️ Auditoría semanal programada: cada lunes a las 07:00 UTC")
         except Exception as e:
             logging.warning(f"⚠️ No se pudo programar la auditoría semanal: {e}")
