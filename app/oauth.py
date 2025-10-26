@@ -191,27 +191,21 @@ class OAuthHandlers:
                 is_sub = False
     
             # ───────────────────────────────
-            # Guardar usuario en telegram_users
+            # Actualizar datos de Twitch en telegram_users
+            # (sin borrar nombre ni username)
             # ───────────────────────────────
             try:
                 await self.db.exec("""
-                    INSERT INTO telegram_users (telegram_id, username, first_name, last_name, linked_twitch_id, twitch_login)
-                    VALUES (%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (telegram_id)
-                    DO UPDATE SET
-                        username=EXCLUDED.username,
-                        first_name=EXCLUDED.first_name,
-                        last_name=EXCLUDED.last_name,
-                        linked_twitch_id=EXCLUDED.linked_twitch_id,
-                        twitch_login=EXCLUDED.twitch_login;
-                """,
-                    row["telegram_id"], None, None, None, me["id"], me["login"]
-                )
+                    UPDATE telegram_users
+                    SET linked_twitch_id=%s, twitch_login=%s
+                    WHERE telegram_id=%s;
+                """, me["id"], me["login"], row["telegram_id"])
+                logging.info(f"✅ Actualizado telegram_users: {row['telegram_id']} → Twitch {me['login']}")
             except Exception as e:
-                logging.warning(f"⚠️ No se pudo guardar en telegram_users: {e}")
+                logging.warning(f"⚠️ No se pudo actualizar telegram_users: {e}")
     
             # ───────────────────────────────
-            # Guardar en group_members
+            # Guardar o actualizar en group_members
             # ───────────────────────────────
             try:
                 await self.db.exec("""
@@ -226,14 +220,14 @@ class OAuthHandlers:
                         is_subscribed=EXCLUDED.is_subscribed,
                         joined_at=NOW();
                 """,
-                    b["group_id"], row["telegram_id"], me["login"], me["id"],  # ✅ ID real de Twitch
+                    b["group_id"], row["telegram_id"], me["login"], me["id"],  # ID real de Twitch
                     b["broadcaster_id"], b["slug"], is_sub
                 )
                 logging.info(f"💾 Guardado en group_members: @{me['login']} ({row['telegram_id']}) - sub={is_sub}")
             except Exception as e:
                 logging.warning(f"⚠️ No se pudo guardar en group_members: {e}")
     
-            # Enviar mensaje final
+            # Enviar mensaje final al usuario
             await self.send_tg(row["telegram_id"], msg, html=True, reply_markup=keyboard)
     
             return web.Response(
