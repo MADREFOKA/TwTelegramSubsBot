@@ -187,24 +187,57 @@ class OAuthHandlers:
                 msg, keyboard = viewer_not_sub(me["display_name"], b["display_name"], b.get("free_invite_link"))
                 is_sub = False
 
-            # ───────────────────────────────
-            # Actualizar datos de Twitch en telegram_users
-            # ───────────────────────────────
+            # ───────────────────────────────────────
+            # Guardar o actualizar en telegram_users
+            # ───────────────────────────────────────
             try:
-                await self.db.exec("""
-                    UPDATE telegram_users
-                    SET linked_twitch_id=%s, twitch_login=%s
-                    WHERE telegram_id=%s;
-                """, me["id"], me["login"], row["telegram_id"])
-                logging.info(f"✅ Actualizado telegram_users: {row['telegram_id']} → Twitch {me['login']}")
+                tu = await self.db.one(
+                    "SELECT * FROM telegram_users WHERE telegram_id=%s",
+                    row["telegram_id"]
+                )
+            
+                if tu:
+                    # Caso 1: ya existe el registro
+                    if tu.get("streamer_id") == b["broadcaster_id"]:
+                        # ➕ Mismo streamer → solo actualizar estado y Twitch info
+                        await self.db.exec("""
+                            UPDATE telegram_users
+                            SET linked_twitch_id=%s,
+                                twitch_login=%s,
+                                is_subscribed=%s
+                            WHERE telegram_id=%s
+                        """, me["id"], me["login"], is_sub, row["telegram_id"])
+                    else:
+                        # ➕ Distinto streamer → duplicar registro con nuevo streamer_id
+                        await self.db.exec("""
+                            INSERT INTO telegram_users (
+                                telegram_id, username, first_name, last_name,
+                                linked_twitch_id, twitch_login, is_subscribed, streamer_id
+                            )
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                        """, row["telegram_id"], tu.get("username"), tu.get("first_name"),
+                             tu.get("last_name"), me["id"], me["login"], is_sub, b["broadcaster_id"])
+                else:
+                    # Caso 2: no existe → crear desde cero
+                    await self.db.exec("""
+                        INSERT INTO telegram_users (
+                            telegram_id, username, first_name, last_name,
+                            linked_twitch_id, twitch_login, is_subscribed, streamer_id
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, row["telegram_id"], None, None, None,
+                         me["id"], me["login"], is_sub, b["broadcaster_id"])
+            
+                logging.info(f"💾 telegram_users actualizado → TG:{row['telegram_id']} TW:{me['login']} Streamer:{b['broadcaster_id']}")
+            
             except Exception as e:
                 logging.warning(f"⚠️ No se pudo actualizar telegram_users: {e}")
 
-            # ───────────────────────────────
+            # ─────────────────────────────────────
             # Guardar o actualizar en group_members
-            # ───────────────────────────────
+            # ─────────────────────────────────────
             try:
-                is_sub = bool(is_sub)  # 👈 Fuerza boolean real
+                is_sub = bool(is_sub)
                 await self.db.exec("""
                     INSERT INTO group_members (
                         group_id, telegram_id, username, twitch_id,
@@ -223,6 +256,7 @@ class OAuthHandlers:
                 logging.info(f"💾 Guardado en group_members: @{me['login']} ({row['telegram_id']}) - sub={is_sub}")
             except Exception as e:
                 logging.warning(f"⚠️ No se pudo guardar en group_members: {e}")
+
 
             await self.send_tg(row["telegram_id"], msg, html=True, reply_markup=keyboard)
 
