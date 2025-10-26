@@ -178,6 +178,7 @@ class TwitchSubBot:
         web_app.router.add_get("/twitch/callback", self.oauth.twitch_callback_user)
         web_app.router.add_get("/dashboard/{slug}", self.dashboard.page)
         web_app.router.add_get("/dashboard/auditnow/{slug}", self.dashboard.trigger_audit)
+        web_app.router.add_get("/dashboard/details/{audit_id}", self.dashboard.audit_details)
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
         runner = web.AppRunner(web_app)
