@@ -207,13 +207,13 @@ class OAuthHandlers:
                 is_sub = bool(is_sub)  # 👈 Fuerza boolean real
                 await self.db.exec("""
                     INSERT INTO group_members (
-                        group_id, telegram_id, username, twitch_login,
+                        group_id, telegram_id, username, twitch_id,
                         broadcaster_id, streamer_slug, joined_at, is_subscribed
                     ) VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s)
                     ON CONFLICT (group_id, telegram_id)
                     DO UPDATE SET
                         username=EXCLUDED.username,
-                        twitch_login=EXCLUDED.twitch_login,
+                        twitch_id=EXCLUDED.twitch_id,
                         is_subscribed=EXCLUDED.is_subscribed,
                         joined_at=NOW();
                 """,
