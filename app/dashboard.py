@@ -26,36 +26,33 @@ class Dashboard:
         if not b:
             return web.Response(text="❌ Token inválido o streamer no encontrado.", status=403)
 
-        # Obtener últimos registros de auditorías
-        rows = await self.db.all("""
+        # Obtener últimas auditorías
+        audits = await self.db.all("""
             SELECT id, total_miembros, expulsados, fallos, fecha_auditoria
             FROM audit_logs
             WHERE streamer_slug=%s
             ORDER BY fecha_auditoria DESC
-            LIMIT 10
         """, slug)
 
-        # Datos para la gráfica (inversión para orden cronológico)
-        chart_labels = [r["fecha_auditoria"].strftime("%d/%m") for r in reversed(rows)]
-        chart_values = [r["expulsados"] for r in reversed(rows)]
+        last_audit = audits[0] if audits else None
 
-        total_audits = len(rows)
-        last_audit = rows[0] if rows else None
+        # Datos para la gráfica
+        chart_labels = [a["fecha_auditoria"].strftime("%d/%m") for a in reversed(audits[-10:])]
+        chart_values = [a["expulsados"] for a in reversed(audits[-10:])]
 
         return {
             "streamer": b["display_name"],
             "slug": slug,
+            "avatar": b.get("profile_image_url"),
             "dashboard_token": token,
-            "total_audits": total_audits,
+            "audits": audits,
             "last_audit": last_audit,
-            "rows": rows,
             "chart_labels": chart_labels,
             "chart_values": chart_values,
-            "base_url": request.app.router["dashboard_page"].url_for(slug=slug),
         }
 
     # ───────────────────────────────
-    # 🚀 BOTÓN: FORZAR AUDITORÍA MANUAL
+    # 🚀 FORZAR AUDITORÍA MANUAL
     # ───────────────────────────────
     async def trigger_audit(self, request):
         slug = request.match_info.get("slug")
