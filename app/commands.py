@@ -74,19 +74,38 @@ class Commands:
     
         # 🧾 Guardar datos básicos de Telegram en telegram_users
         try:
+            # Buscar el broadcaster según el argumento del /start
+            args = context.args if context.args else []
+            if not args:
+                return await update.message.reply_text("⚠️ Usa el enlace del streamer. Ejemplo: /start *nickdelstreamer*")
+        
+            arg = args[0]
+            b = await self.db.one(
+                """
+                SELECT * FROM broadcasters
+                WHERE broadcaster_id=%s OR LOWER(slug)=%s OR LOWER(display_name)=LOWER(%s)
+                """,
+                arg, arg.lower(), arg
+            )
+            if not b:
+                return await update.message.reply_text("❌ Este streamer no está vinculado.")
+        
             await self.db.exec("""
-                INSERT INTO telegram_users (telegram_id, username, first_name, last_name)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO telegram_users (telegram_id, username, first_name, last_name, streamer_id)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (telegram_id)
                 DO UPDATE SET
                     username = EXCLUDED.username,
                     first_name = EXCLUDED.first_name,
-                    last_name = EXCLUDED.last_name;
-            """, user.id, user.username, user.first_name, user.last_name)
-            logging.info(f"💾 Datos Telegram actualizados: {user.first_name} {user.last_name} (@{user.username})")
+                    last_name = EXCLUDED.last_name,
+                    streamer_id = EXCLUDED.streamer_id;
+            """, user.id, user.username, user.first_name, user.last_name, b["broadcaster_id"])
+        
+            logging.info(f"💾 Telegram user actualizado con streamer_id={b['broadcaster_id']}: {user.first_name} {user.last_name} (@{user.username})")
+        
         except Exception as e:
             logging.warning(f"⚠️ No se pudo guardar datos de Telegram: {e}")
-    
+
         # 📡 Continuar con la vinculación normal
         args = context.args if context.args else []
         if not args:
