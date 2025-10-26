@@ -81,7 +81,7 @@ class Database:
     # 👥 GROUP_MEMBERS — Guardar suscriptores
     # ============================================================
     async def add_group_member(self, group_id: int, streamer_slug: str, broadcaster_id: str,
-                               telegram_id: int, username: str = None, twitch_login: str = None):
+                               telegram_id: int, username: str = None, twitch_id: str = None):
         """
         Guarda o actualiza un usuario en la tabla group_members.
         Se llama cuando el usuario se vincula y es sub del streamer.
@@ -91,13 +91,13 @@ class Database:
                 async with conn.cursor() as cur:
                     await cur.execute("""
                         INSERT INTO group_members (
-                            group_id, streamer_slug, broadcaster_id, telegram_id, username, twitch_login,
+                            group_id, streamer_slug, broadcaster_id, telegram_id, username, twitch_id,
                             is_subscribed, joined_at
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW())
                         ON CONFLICT (group_id, telegram_id)
                         DO UPDATE SET is_subscribed = TRUE, joined_at = NOW();
-                    """, (group_id, streamer_slug, broadcaster_id, telegram_id, username, twitch_login))
+                    """, (group_id, streamer_slug, broadcaster_id, telegram_id, username, twitch_id))
                     await conn.commit()
                     logging.info(f"✅ Guardado en group_members: {username} ({telegram_id}) → {streamer_slug}")
         except Exception as e:
