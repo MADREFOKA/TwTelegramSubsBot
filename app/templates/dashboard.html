@@ -1,141 +1,206 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <title>Dashboard de {{ streamer }}</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body {
-            background-color: #0e0e10;
-            color: #efeff1;
-            font-family: "Inter", sans-serif;
-            margin: 0;
-            padding: 0;
-        }
-        .container {
-            max-width: 960px;
-            margin: 30px auto;
-            padding: 20px;
-            background-color: #18181b;
-            border-radius: 12px;
-            box-shadow: 0 0 20px rgba(0,0,0,0.5);
-        }
-        h1 {
-            text-align: center;
-            color: #9146FF;
-        }
-        button {
-            background-color: #9146FF;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 10px 16px;
-            font-size: 15px;
-            cursor: pointer;
-            margin-top: 10px;
-        }
-        button:hover {
-            background-color: #772ce8;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 30px;
-            color: #fff;
-        }
-        th, td {
-            text-align: center;
-            padding: 10px;
-            border-bottom: 1px solid #2f2f33;
-        }
-        th {
-            color: #a970ff;
-            font-weight: bold;
-        }
-        tr:hover {
-            background-color: #1f1f23;
-        }
-        .chart-container {
-            position: relative;
-            height: 300px;
-            width: 100%;
-            margin-top: 20px;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <title>Panel de {{ streamer }}</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      background-color: #0e0e10;
+      color: #efeff1;
+      font-family: "Inter", sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 30px auto;
+      background-color: #18181b;
+      border-radius: 15px;
+      padding: 30px;
+      box-shadow: 0 0 25px rgba(0,0,0,0.6);
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    .header img {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      border: 3px solid #9146FF;
+    }
+    h1 {
+      color: #9146FF;
+      margin: 0;
+      font-size: 26px;
+    }
+    .center {
+      text-align: center;
+      margin-top: 20px;
+    }
+    button {
+      background-color: #9146FF;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 15px;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+    button:hover {
+      background-color: #772ce8;
+    }
+    .summary {
+      background-color: #1f1f23;
+      padding: 20px;
+      border-radius: 10px;
+      margin-top: 25px;
+      text-align: center;
+    }
+    .summary table {
+      width: 100%;
+      color: white;
+      border-collapse: collapse;
+    }
+    .summary th, .summary td {
+      padding: 8px;
+      border-bottom: 1px solid #2f2f33;
+    }
+    .chart-container {
+      position: relative;
+      height: 300px;
+      width: 100%;
+      margin-top: 30px;
+    }
+    table {
+      width: 100%;
+      margin-top: 30px;
+      border-collapse: collapse;
+    }
+    th, td {
+      text-align: center;
+      padding: 10px;
+      border-bottom: 1px solid #2f2f33;
+    }
+    th {
+      color: #a970ff;
+      font-weight: bold;
+    }
+    tr:hover {
+      background-color: #1f1f23;
+    }
+  </style>
 </head>
 <body>
-<div class="container">
-    <h1>Panel de {{ streamer }}</h1>
+  <div class="container">
+    <div class="header">
+      {% if avatar %}
+      <img src="{{ avatar }}" alt="Avatar">
+      {% endif %}
+      <div>
+        <h1>Panel del grupo de {{ streamer }}</h1>
+        <p style="color:#ccc;">@{{ slug }}</p>
+      </div>
+    </div>
 
-    <p style="text-align:center;">Resumen de las últimas auditorías automáticas y manuales.</p>
+    <div class="center">
+      <form method="get" action="/dashboard/auditnow/{{ slug }}">
+        <input type="hidden" name="token" value="{{ dashboard_token }}">
+        <button type="submit">📊 Forzar auditoría ahora</button>
+      </form>
+    </div>
+
+    {% if last_audit %}
+    <div class="summary">
+      <h2>🧾 Última auditoría</h2>
+      <table>
+        <tr>
+          <th>Fecha</th>
+          <th>Total miembros</th>
+          <th>Eliminados</th>
+          <th>Fallos</th>
+        </tr>
+        <tr>
+          <td>{{ last_audit.fecha_auditoria.strftime("%d/%m/%Y %H:%M") }}</td>
+          <td>{{ last_audit.total_miembros or 0 }}</td>
+          <td style="color: {{ 'red' if last_audit.expulsados > 0 else 'white' }}">
+            {{ last_audit.expulsados }}
+          </td>
+          <td style="color: {{ 'orange' if last_audit.fallos > 0 else 'white' }}">
+            {{ last_audit.fallos }}
+          </td>
+        </tr>
+      </table>
+    </div>
+    {% endif %}
 
     <div class="chart-container">
-        <canvas id="auditChart"></canvas>
+      <canvas id="auditChart"></canvas>
     </div>
 
-    <div style="text-align:center;">
-        <form method="get" action="/dashboard/auditnow/{{ slug }}">
-            <input type="hidden" name="token" value="{{ dashboard_token }}">
-            <button type="submit">📊 Forzar auditoría ahora</button>
-        </form>
-    </div>
-
+    <h2 style="margin-top:40px;color:#a970ff;">📅 Historial de auditorías</h2>
     <table>
-        <thead>
-            <tr>
-                <th>Fecha</th>
-                <th>Total miembros</th>
-                <th>Expulsados</th>
-                <th>Fallos</th>
-            </tr>
-        </thead>
-        <tbody>
-        {% for r in rows %}
-            <tr>
-                <td>{{ r.fecha_auditoria.strftime("%d/%m/%Y %H:%M") }}</td>
-                <td>{{ r.total_miembros or 0 }}</td>
-                <td style="color: {{ 'red' if r.expulsados > 0 else 'white' }};">
-                    {{ r.expulsados }}
-                </td>
-                <td style="color: {{ 'orange' if r.fallos > 0 else 'white' }};">
-                    {{ r.fallos }}
-                </td>
-            </tr>
+      <thead>
+        <tr>
+          <th>Fecha</th>
+          <th>Total miembros</th>
+          <th>Expulsados</th>
+          <th>Fallos</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in audits %}
+          <tr>
+            <td>{{ r.fecha_auditoria.strftime("%d/%m/%Y %H:%M") }}</td>
+            <td>{{ r.total_miembros or 0 }}</td>
+            <td style="color: {{ 'red' if r.expulsados > 0 else 'white' }}">
+              {{ r.expulsados }}
+            </td>
+            <td style="color: {{ 'orange' if r.fallos > 0 else 'white' }}">
+              {{ r.fallos }}
+            </td>
+          </tr>
         {% else %}
-            <tr><td colspan="4">Sin auditorías registradas.</td></tr>
+          <tr><td colspan="4">Sin auditorías registradas.</td></tr>
         {% endfor %}
-        </tbody>
+      </tbody>
     </table>
-</div>
+  </div>
 
-<script>
-const ctx = document.getElementById('auditChart');
-const chartLabels = {{ chart_labels | tojson }};
-const chartValues = {{ chart_values | tojson }};
-new Chart(ctx, {
-    type: 'line',
-    data: {
+  <script>
+    const ctx = document.getElementById('auditChart');
+    const chartLabels = {{ chart_labels | tojson }};
+    const chartValues = {{ chart_values | tojson }};
+    new Chart(ctx, {
+      type: 'line',
+      data: {
         labels: chartLabels,
         datasets: [{
-            label: 'Usuarios expulsados',
-            data: chartValues,
-            borderColor: '#9146FF',
-            backgroundColor: 'rgba(145,70,255,0.2)',
-            tension: 0.3,
-            fill: true,
+          label: 'Usuarios expulsados',
+          data: chartValues,
+          borderColor: '#9146FF',
+          backgroundColor: 'rgba(145,70,255,0.25)',
+          tension: 0.3,
+          fill: true,
         }]
-    },
-    options: {
+      },
+      options: {
         scales: {
-            y: { beginAtZero: true }
+          y: { beginAtZero: true, ticks: { color: '#fff' } },
+          x: { ticks: { color: '#fff' } }
         },
         plugins: {
-            legend: { display: true, labels: { color: '#fff' } }
+          legend: { labels: { color: '#fff' } }
         },
         responsive: true,
         maintainAspectRatio: false,
-    }
-});
-</script>
+      }
+    });
+  </script>
 </body>
 </html>
