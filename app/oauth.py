@@ -219,7 +219,7 @@ class OAuthHandlers:
                         is_subscribed=EXCLUDED.is_subscribed,
                         joined_at=NOW();
                 """,
-                    b["group_id"], row["telegram_id"], me["login"], me["login"],
+                    b["group_id"], row["telegram_id"], me["login"], me["id"],
                     b["broadcaster_id"], b["slug"], is_sub
                 )
                 logging.info(f"💾 Guardado en group_members: @{me['login']} ({row['telegram_id']}) - sub={is_sub}")
