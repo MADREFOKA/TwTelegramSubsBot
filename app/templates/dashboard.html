@@ -1,122 +1,141 @@
-{% extends "base.html" %}
-{% block content %}
-<div class="dashboard-container">
-    <div class="header">
-        <img src="{{ avatar_url }}" alt="Avatar" class="avatar">
-        <h2>{{ streamer.display_name }}</h2>
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard de {{ streamer }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            background-color: #0e0e10;
+            color: #efeff1;
+            font-family: "Inter", sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 960px;
+            margin: 30px auto;
+            padding: 20px;
+            background-color: #18181b;
+            border-radius: 12px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        h1 {
+            text-align: center;
+            color: #9146FF;
+        }
+        button {
+            background-color: #9146FF;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 16px;
+            font-size: 15px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #772ce8;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 30px;
+            color: #fff;
+        }
+        th, td {
+            text-align: center;
+            padding: 10px;
+            border-bottom: 1px solid #2f2f33;
+        }
+        th {
+            color: #a970ff;
+            font-weight: bold;
+        }
+        tr:hover {
+            background-color: #1f1f23;
+        }
+        .chart-container {
+            position: relative;
+            height: 300px;
+            width: 100%;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Panel de {{ streamer }}</h1>
+
+    <p style="text-align:center;">Resumen de las últimas auditorías automáticas y manuales.</p>
+
+    <div class="chart-container">
+        <canvas id="auditChart"></canvas>
     </div>
 
-    {% if audit_done %}
-    <div class="alert success">✅ Auditoría ejecutada correctamente.</div>
-    {% endif %}
-
-    {% if resumen %}
-    <div class="summary-card">
-        <h3>📊 Última auditoría</h3>
-        <p><strong>Fecha:</strong> {{ resumen.fecha_auditoria }}</p>
-        <p><strong>Total miembros:</strong> {{ resumen.total_miembros }}</p>
-        <p><strong>Expulsados:</strong> {{ resumen.expulsados }}</p>
-        <p><strong>Fallos:</strong> {{ resumen.fallos }}</p>
-    </div>
-    {% else %}
-    <p>⚠️ Aún no se han realizado auditorías.</p>
-    {% endif %}
-
-    <div class="actions">
-        <a href="/dashboard/auditnow/{{ streamer.slug }}?token={{ token }}" class="btn btn-primary">
-            🧹 Forzar auditoría
-        </a>
+    <div style="text-align:center;">
+        <form method="get" action="/dashboard/auditnow/{{ slug }}">
+            <input type="hidden" name="token" value="{{ dashboard_token }}">
+            <button type="submit">📊 Forzar auditoría ahora</button>
+        </form>
     </div>
 
-    <h3>🕒 Historial de auditorías</h3>
-    <table class="audit-table">
+    <table>
         <thead>
             <tr>
                 <th>Fecha</th>
-                <th>Miembros</th>
+                <th>Total miembros</th>
                 <th>Expulsados</th>
                 <th>Fallos</th>
             </tr>
         </thead>
         <tbody>
-            {% for log in logs %}
+        {% for r in rows %}
             <tr>
-                <td>{{ log.fecha_auditoria }}</td>
-                <td>{{ log.total_miembros }}</td>
-                <td>{{ log.expulsados }}</td>
-                <td>{{ log.fallos }}</td>
+                <td>{{ r.fecha_auditoria.strftime("%d/%m/%Y %H:%M") }}</td>
+                <td>{{ r.total_miembros or 0 }}</td>
+                <td style="color: {{ 'red' if r.expulsados > 0 else 'white' }};">
+                    {{ r.expulsados }}
+                </td>
+                <td style="color: {{ 'orange' if r.fallos > 0 else 'white' }};">
+                    {{ r.fallos }}
+                </td>
             </tr>
-            {% endfor %}
+        {% else %}
+            <tr><td colspan="4">Sin auditorías registradas.</td></tr>
+        {% endfor %}
         </tbody>
     </table>
-
-    <h3>👑 Usuarios privilegiados</h3>
-    <ul class="priv-list">
-        {% for p in privileged_users %}
-        <li>{{ p.username }}</li>
-        {% else %}
-        <li><em>No hay usuarios privilegiados.</em></li>
-        {% endfor %}
-    </ul>
 </div>
 
-<style>
-.dashboard-container {
-    max-width: 700px;
-    margin: 40px auto;
-    background: #18181b;
-    color: #f5f5f5;
-    border-radius: 15px;
-    padding: 25px;
-    font-family: 'Inter', sans-serif;
-}
-.header {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-}
-.avatar {
-    width: 60px;
-    height: 60px;
-    border-radius: 50%;
-}
-.summary-card {
-    background: #222;
-    padding: 15px;
-    border-radius: 10px;
-    margin-top: 15px;
-}
-.alert.success {
-    background: #22c55e;
-    color: white;
-    padding: 10px;
-    border-radius: 10px;
-    margin-bottom: 10px;
-}
-.actions {
-    margin-top: 20px;
-    text-align: center;
-}
-.btn-primary {
-    background: #9146FF;
-    color: white;
-    text-decoration: none;
-    padding: 10px 20px;
-    border-radius: 8px;
-}
-.audit-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 15px;
-}
-.audit-table th, .audit-table td {
-    padding: 8px 10px;
-    border-bottom: 1px solid #333;
-    text-align: center;
-}
-.priv-list {
-    list-style: none;
-    padding-left: 0;
-}
-</style>
-{% endblock %}
+<script>
+const ctx = document.getElementById('auditChart');
+const chartLabels = {{ chart_labels | tojson }};
+const chartValues = {{ chart_values | tojson }};
+new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: chartLabels,
+        datasets: [{
+            label: 'Usuarios expulsados',
+            data: chartValues,
+            borderColor: '#9146FF',
+            backgroundColor: 'rgba(145,70,255,0.2)',
+            tension: 0.3,
+            fill: true,
+        }]
+    },
+    options: {
+        scales: {
+            y: { beginAtZero: true }
+        },
+        plugins: {
+            legend: { display: true, labels: { color: '#fff' } }
+        },
+        responsive: true,
+        maintainAspectRatio: false,
+    }
+});
+</script>
+</body>
+</html>
