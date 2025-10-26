@@ -1,97 +1,115 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <title>{{ streamer.display_name }} | Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    body { background: #0e0e10; color: #f5f5f5; font-family: "Inter", sans-serif; margin: 0; }
-    .header { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 15px; background: #18181b; padding: 25px; border-bottom: 1px solid #9146ff44; }
-    .header img { width: 70px; height: 70px; border-radius: 12px; object-fit: cover; background: #9146ff22; }
-    .header .info h1 { margin: 0; color: #bf94ff; font-size: 1.8em; }
-    .header p { color: #aaa; margin: 3px 0; }
-    .header button { background: #9146ff; border: none; color: #fff; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; }
-    .header button:hover { background: #7d36e2; }
+<meta charset="UTF-8">
+<title>{{ streamer.display_name }} — Dashboard</title>
+<style>
+body {
+  background: #0e0e10;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+  max-width: 900px;
+  margin: auto;
+  padding: 24px;
+}
+h1 {
+  color: #cfaaff;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 24px;
+  font-size: 14px;
+}
+th, td {
+  padding: 8px;
+  border-bottom: 1px solid #2a2a2a;
+}
+th {
+  background: #6441a5;
+  color: #fff;
+  text-align: left;
+}
+button {
+  background: #6441a5;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+button:hover {
+  background: #7a5ed8;
+}
+.detail-row {
+  display: none;
+  background: #1b1b1b;
+}
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.detail-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #2a2a2a;
+}
+.sub-ok { color: #66ff99; }
+.expulsado { color: #ff6666; }
+.fallo { color: #ffaa33; }
+.icon { font-weight: bold; margin-right: 6px; }
+.timestamp { color: #666; font-size: 12px; }
+.username { font-weight: bold; }
+.twitch { color: #aaa; margin-left: 6px; }
+</style>
+<script>
+async function toggleDetails(id){
+  const row = document.getElementById("details-"+id);
+  if(row.style.display === "table-row"){ row.style.display="none"; return; }
+  row.style.display="table-row";
 
-    .dashboard-container { width: 90%; max-width: 900px; margin: 30px auto; text-align: center; }
-    .summary-card { background: #1f1f23; padding: 25px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 0 12px #00000033; }
-    .summary-metrics { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 15px; }
-    .metric { flex: 1 1 150px; background: #2b2b30; padding: 15px; border-radius: 10px; transition: transform 0.2s; }
-    .metric:hover { transform: scale(1.05); }
-    .metric h3 { color: #bf94ff; margin-bottom: 5px; }
-    .metric span { font-size: 1.6em; font-weight: 700; }
+  const resp = await fetch(`/dashboard/details/${id}`);
+  const data = await resp.json();
 
-    .chart-container { background: #18181b; border-radius: 12px; padding: 20px; width: 90%; max-width: 650px; margin: 0 auto 30px; box-shadow: 0 0 10px #00000044; }
+  const html = data.map(d => {
+    const clase = d.accion === "expulsado" ? "expulsado" : "fallo";
+    const icon = d.accion === "expulsado" ? "❌" : "⚠️";
+    const motivo = d.motivo ? ` — <i>${d.motivo}</i>` : "";
+    const tw = d.twitch_login && d.twitch_login !== "—" ? `<span class='twitch'>(${d.twitch_login})</span>` : "";
+    const fecha = d.timestamp ? `<div class='timestamp'>${new Date(d.timestamp).toLocaleString()}</div>` : "";
+    return `<tr><td class='${clase}'><span class='icon'>${icon}</span><span class='username'>${d.username}</span>${tw}${motivo}${fecha}</td></tr>`;
+  }).join("");
 
-    table { width: 100%; border-collapse: collapse; background: #1f1f23; border-radius: 10px; overflow: hidden; box-shadow: 0 0 10px #00000033; }
-    th, td { padding: 12px 15px; text-align: center; }
-    th { background: #9146ff33; color: #fff; }
-    tr:nth-child(even) { background: #2a2a2e; }
-    tr:hover { background: #3a3a3f; }
-
-    footer { color: #7f7f7f; font-size: 0.8em; text-align: center; margin: 40px 0; }
-    #toast { position: fixed; bottom: 20px; right: 20px; background: #9146ff; color: white; padding: 10px 20px; border-radius: 6px; opacity: 0; transition: opacity 0.4s ease; }
-    #toast.show { opacity: 1; }
-  </style>
+  row.querySelector("tbody").innerHTML = html || "<tr><td>Sin usuarios expulsados o con fallos</td></tr>";
+}
+</script>
 </head>
 <body>
-  <div class="header">
-    <img src="{{ avatar_url }}" alt="avatar" />
-    <div class="info">
-      <h1>{{ streamer.display_name }}</h1>
-      <p>@{{ streamer.slug }}</p>
-    </div>
-    <button onclick="runAudit()">🔁 Forzar auditoría</button>
-  </div>
+<h1>📊 Dashboard — {{ streamer.display_name }}</h1>
 
-  <div class="dashboard-container">
-    {% if resumen %}
-    <div class="summary-card">
-      <h2>📊 Última auditoría</h2>
-      <div class="summary-metrics">
-        <div class="metric"><h3>Miembros</h3><span>{{ resumen.total_miembros }}</span></div>
-        <div class="metric"><h3>Expulsados</h3><span>{{ resumen.expulsados }}</span></div>
-        <div class="metric"><h3>Sin vínculo</h3><span>{{ resumen.sin_vinculo }}</span></div>
-        <div class="metric"><h3>Fallos</h3><span>{{ resumen.fallos }}</span></div>
-      </div>
-    </div>
-    {% endif %}
-
-    <div class="chart-container"><canvas id="auditChart"></canvas></div>
-
-    <table>
-      <tr><th>Semana</th><th>Miembros</th><th>Expulsados</th><th>Sin vínculo</th><th>Fallos</th><th>Fecha</th></tr>
-      {% for log in logs %}
-      <tr>
-        <td>{{ log.etiqueta_semana }}</td>
-        <td>{{ log.total_miembros }}</td>
-        <td>{{ log.expulsados }}</td>
-        <td>{{ log.sin_vinculo }}</td>
-        <td>{{ log.fallos }}</td>
-        <td>{{ log.fecha_auditoria }}</td>
-      </tr>
-      {% endfor %}
-    </table>
-  </div>
-  <div id="toast">🧹 Auditoría en curso...</div>
-  <script>
-  function runAudit() {
-    const toast = document.getElementById("toast");
-    toast.textContent = "🧹 Ejecutando auditoría...";
-    toast.classList.add("show");
-
-    fetch("{{ base_url }}/dashboard/auditnow/{{ streamer.slug }}?token={{ token }}")
-      .then(r => r.json())
-      .then(d => {
-        toast.textContent = d.msg || "✅ Auditoría completada.";
-        if (d.status === "ok") setTimeout(() => location.reload(), 3000);
-      })
-      .catch(err => {
-        toast.textContent = "⚠️ Error ejecutando la auditoría.";
-        console.error(err);
-      });
-  }
-</script>
+<table>
+  <tr>
+    <th>Fecha</th>
+    <th>Miembros</th>
+    <th>Expulsados</th>
+    <th>Fallos</th>
+    <th>Acción</th>
+  </tr>
+  {% for a in auditorias %}
+  <tr>
+    <td>{{ a.fecha_auditoria.strftime("%d/%m/%Y %H:%M") }}</td>
+    <td>{{ a.total_miembros }}</td>
+    <td>{{ a.expulsados }}</td>
+    <td>{{ a.fallos }}</td>
+    <td><button onclick="toggleDetails('{{ a.id }}')">Ver detalles</button></td>
+  </tr>
+  <tr id="details-{{ a.id }}" class="detail-row">
+    <td colspan="5">
+      <table class="detail-table"><tbody></tbody></table>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
 </body>
 </html>
