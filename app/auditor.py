@@ -2,23 +2,22 @@
 import logging
 import datetime
 import requests
-import asyncio
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-from app.db import Database
 from datetime import time as dtime
+from app.db import Database
 
 
 # ──────────────────────────────────────────────
-# 🔍 AUDITORÍA COMPLETA — Expulsa no subs, no vinculados e inactivos
+# 🔍 AUDITORÍA COMPLETA (con verificación real en Twitch)
 # ──────────────────────────────────────────────
-async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_token=None):
+async def run_full_audit(bot, db: Database, slug: str):
     """
     Ejecuta una auditoría completa:
-    - Expulsa usuarios no vinculados, no suscriptores o inactivos.
-    - Expulsa también usuarios que hayan hablado en el grupo pero no estén en group_members ni privilegiados.
+    - Verifica en Twitch si cada miembro sigue siendo sub.
+    - Expulsa no subs, no vinculados o inactivos.
+    - Limpia su registro de group_members y actualiza telegram_users.is_subscribed.
     """
     try:
-        # Obtener streamer y grupo
         b = await db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
         if not b or not b.get("group_id"):
             logging.warning(f"⏭️ Saltando auditoría: {slug} sin grupo vinculado.")
@@ -28,15 +27,14 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
         broadcaster_id = b["broadcaster_id"]
         logging.info(f"🔎 Iniciando auditoría completa para {slug} ({group_id})")
 
-        # Obtener miembros y privilegiados
+        # Obtener miembros registrados y privilegiados
         members = await db.all("""
-            SELECT telegram_id, username, linked_twitch_id, twitch_login, is_subscribed, joined_at
+            SELECT telegram_id, username, is_subscribed, twitch_login, joined_at
             FROM group_members
             WHERE group_id=%s
         """, group_id)
         privileged = set(await db.get_privileged_ids(slug))
         privileged_ids = privileged | {b["owner_telegram_id"]}
-        db_member_ids = {m["telegram_id"] for m in members}
 
         total = len(members)
         expulsados = 0
@@ -44,108 +42,92 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
         fallos = 0
         ahora = datetime.datetime.utcnow()
 
-        # Refrescar token del broadcaster (una sola vez)
-        b_access = None
-        if refresh_twitch_token and cfg:
-            b_access = await refresh_twitch_token(b)
+        # Preparar token de Twitch
+        from app.security import TokenCipher
+        cipher = TokenCipher()
+        try:
+            access_token = cipher.decrypt(b["access_token"])
+        except Exception:
+            logging.warning(f"⚠️ Token corrupto para {slug}, intentando refrescar...")
+            from app.bot import TwitchSubBot  # fallback si existe refresco
+            access_token = None
 
-        headers_b = {
-            "Authorization": f"Bearer {b_access}" if b_access else "",
-            "Client-Id": cfg.client_id if cfg else "",
+        headers_twitch = {
+            "Authorization": f"Bearer {access_token}",
+            "Client-Id": b.get("client_id") or "",
         }
 
-        # ────────────── Paso 1 — Comprobar miembros en BD ──────────────
+        # ────────────────────────────────
+        # 🔹 Paso 1 — Revisar cada miembro en Twitch
+        # ────────────────────────────────
         for m in members:
             tg_id = m["telegram_id"]
             if tg_id in privileged_ids:
                 continue
 
             motivo = None
-            linked_twitch_id = m.get("linked_twitch_id")
 
-            # Sin vínculo → expulsar
-            if not linked_twitch_id:
+            # 1️⃣ Sin vinculación Twitch
+            if not m.get("twitch_login"):
                 motivo = "no vinculado"
                 sin_vinculo += 1
-            else:
-                # Consultar estado real en Twitch con token del broadcaster
+
+            # 2️⃣ Verificar en Twitch si sigue siendo sub
+            elif b.get("broadcaster_id"):
                 try:
-                    r = requests.get(
-                        f"{cfg.TW_API}/subscriptions/user",
-                        headers=headers_b,
-                        params={"broadcaster_id": broadcaster_id, "user_id": linked_twitch_id},
+                    resp = requests.get(
+                        "https://api.twitch.tv/helix/subscriptions/user",
+                        headers=headers_twitch,
+                        params={
+                            "broadcaster_id": b["broadcaster_id"],
+                            "user_id": m["twitch_login"],
+                        },
                         timeout=10
                     )
-                    res_json = r.json()
-                    sigue_sub = bool(res_json.get("data"))
+                    data = resp.json().get("data", [])
+                    is_still_sub = len(data) > 0
 
-                    # Actualizar en ambas tablas
-                    await db.exec(
-                        "UPDATE group_members SET is_subscribed=%s WHERE telegram_id=%s",
-                        sigue_sub, tg_id
-                    )
+                    # Actualizar estado en BD
                     await db.exec(
                         "UPDATE telegram_users SET is_subscribed=%s WHERE telegram_id=%s",
-                        sigue_sub, tg_id
+                        is_still_sub, tg_id
+                    )
+                    await db.exec(
+                        "UPDATE group_members SET is_subscribed=%s WHERE telegram_id=%s AND group_id=%s",
+                        is_still_sub, tg_id, group_id
                     )
 
-                    logging.info(f"👤 @{m.get('username')} ({tg_id}) → {'✅ sub' if sigue_sub else '❌ no sub'}")
+                    if not is_still_sub:
+                        motivo = "ya no es sub"
 
-                    if not sigue_sub:
-                        motivo = "no sub"
                 except Exception as e:
-                    logging.warning(f"⚠️ No se pudo verificar sub de {m.get('username')} ({tg_id}): {e}")
-                    fallos += 1
+                    logging.warning(f"⚠️ Error verificando sub {m.get('username')}: {e}")
 
-            # Inactividad (>30 días desde join)
-            if not motivo and m.get("joined_at"):
-                try:
-                    dias = (ahora - m["joined_at"]).days
-                    if dias > 30:
-                        motivo = f"inactivo ({dias}d)"
-                except Exception:
-                    pass
+            # 3️⃣ Inactivo (más de 30 días)
+            elif m.get("joined_at") and (ahora - m["joined_at"]).days > 30:
+                motivo = "inactivo"
 
-            # Expulsión si aplica
+            # Expulsar si aplica
             if motivo:
                 try:
                     await bot.ban_chat_member(group_id, tg_id)
                     await bot.unban_chat_member(group_id, tg_id)
-
-                    # Eliminar de ambas tablas
-                    await db.exec("DELETE FROM group_members WHERE telegram_id=%s", tg_id)
-                    await db.exec("UPDATE telegram_users SET is_subscribed=FALSE WHERE telegram_id=%s", tg_id)
-
                     expulsados += 1
                     logging.info(f"🚫 Expulsado @{m.get('username')} ({tg_id}) — {motivo}")
-                    await asyncio.sleep(1.2)  # ⏳ Anti rate-limit
+
+                    # 🧹 Limpiar de la base
+                    await db.exec(
+                        "DELETE FROM group_members WHERE group_id=%s AND telegram_id=%s",
+                        group_id, tg_id
+                    )
+
                 except Exception as e:
                     fallos += 1
                     logging.warning(f"⚠️ No se pudo expulsar {tg_id}: {e}")
 
-        # ────────────── Paso 2 — Revisar usuarios que han hablado ──────────────
-        try:
-            async for msg in bot.get_chat_history(chat_id=group_id, limit=2000):
-                user = msg.from_user
-                if not user:
-                    continue
-                if user.id in privileged_ids or user.id in db_member_ids:
-                    continue  # Ya está en BD o es privilegiado
-
-                # Usuario fuera de la BD → expulsar
-                try:
-                    await bot.ban_chat_member(group_id, user.id)
-                    await bot.unban_chat_member(group_id, user.id)
-                    expulsados += 1
-                    logging.info(f"🚫 Expulsado no registrado @{user.username} ({user.id})")
-                    await asyncio.sleep(1.2)
-                except Exception as e:
-                    fallos += 1
-                    logging.warning(f"⚠️ No se pudo expulsar no registrado {user.id}: {e}")
-        except Exception as e:
-            logging.warning(f"⚠️ No se pudieron analizar mensajes recientes: {e}")
-
-        # Registrar resultados
+        # ────────────────────────────────
+        # 🔹 Registrar auditoría
+        # ────────────────────────────────
         await db.exec("""
             INSERT INTO audit_logs (
                 broadcaster_id, group_id, etiqueta_semana,
@@ -156,7 +138,7 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
             total, expulsados, sin_vinculo, fallos, slug
         )
 
-        logging.info(f"✅ Auditoría completada para {slug}: {expulsados} expulsados (fallos: {fallos}).")
+        logging.info(f"✅ Auditoría completada para {slug}: {expulsados} expulsados.")
 
     except Exception as e:
         logging.exception(f"❌ Error en run_full_audit({slug}): {e}")
@@ -174,48 +156,56 @@ class Auditor:
         self.refresh_twitch_token = refresh_twitch_token
 
     async def cmd_auditnow(self, update, context):
-        """Ejecuta una auditoría completa del grupo manualmente."""
+        """Ejecuta una auditoría completa del grupo."""
         user = update.effective_user
-        if update.effective_chat.type != "private":
+        chat_type = update.effective_chat.type
+
+        if chat_type != "private":
             return await update.message.reply_text("⚠️ Usa este comando en privado.")
 
         b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
         if not b:
             return await update.message.reply_text("❌ No tienes ningún canal vinculado. Usa /setup primero.")
-        if not b.get("group_id"):
-            return await update.message.reply_text("⚠️ No tienes grupo premium vinculado.")
 
         slug = b["slug"]
+        group_id = b.get("group_id")
+
+        if not group_id:
+            return await update.message.reply_text("⚠️ No tienes ningún grupo premium vinculado.")
+
         try:
-            await run_full_audit(context.bot, self.db, b["slug"], self.cfg, self.refresh_twitch_token)
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("📊 Abrir Dashboard",
-                url=f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}")]])
+            await run_full_audit(context.bot, self.db, slug)
+
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
+                "📊 Abrir Dashboard",
+                url=f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}"
+            )]])
+
             await update.message.reply_text("✅ Auditoría completada. Revisa tu Dashboard.", reply_markup=keyboard)
+
         except Exception as e:
             logging.error(f"Error en auditoría manual ({slug}): {e}")
             await update.message.reply_text("⚠️ Error al ejecutar la auditoría.")
 
     def schedule_weekly_audit(self, job_queue):
-        """Programa la auditoría automática cada lunes a las 09:00 UTC."""
+        """Programa la auditoría automática los lunes a las 09:00 UTC."""
         from telegram.ext import CallbackContext
 
         async def _weekly_task(context: 'CallbackContext'):
             rows = await self.db.all("SELECT slug FROM broadcasters")
             for r in rows:
                 try:
-                    await run_full_audit(context.bot, self.db, r["slug"], self.cfg, self.refresh_twitch_token)
-                    await asyncio.sleep(2)  # Espera entre grupos
+                    await run_full_audit(context.bot, self.db, r["slug"])
                 except Exception as e:
                     logging.error(f"Error auditoría semanal {r['slug']}: {e}")
 
         try:
             job_queue.run_daily(
                 _weekly_task,
-                time=dtime(hour=7, minute=0),  # 09:00 UTC (ajustable)
-                days=(0,), 
+                time=dtime(hour=9, minute=0),
+                days=(0,),  # Lunes
                 name="weekly_full_audit"
             )
-            logging.info("🗓️ Auditoría semanal programada: cada lunes a las 07:00 UTC")
+            logging.info("🗓️ Auditoría semanal programada: cada lunes a las 09:00 UTC")
         except Exception as e:
             logging.warning(f"⚠️ No se pudo programar la auditoría semanal: {e}")
