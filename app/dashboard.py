@@ -1,3 +1,4 @@
+# app/dashboard.py
 import os
 import logging
 import aiohttp_jinja2
@@ -36,21 +37,14 @@ class Dashboard:
                 LIMIT 20
             """, slug)
 
-            # 🔧 Convertir fecha_auditoria a texto legible
+            # Convertir fechas legibles
             for l in logs:
                 if l.get("fecha_auditoria"):
                     l["fecha_auditoria"] = l["fecha_auditoria"].strftime("%d/%m/%Y %H:%M")
 
-            # Datos del resumen (última auditoría)
             resumen = logs[0] if logs else None
+            avatar_url = streamer.get("profile_image_url") or "https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png"
 
-            # Imagen del canal o logo de Twitch por defecto
-            avatar_url = (
-                streamer.get("profile_image_url")
-                or "https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png"
-            )
-
-            # Obtener lista de privilegiados
             privileged = await self.db.all("""
                 SELECT username, telegram_id, added_at
                 FROM privileged_users
@@ -65,15 +59,15 @@ class Dashboard:
                 "avatar_url": avatar_url,
                 "token": token,
                 "privileged_users": privileged,
-                "base_url": os.getenv("BASE_URL")
+                "base_url": os.getenv("BASE_URL"),
             }
-            
+
         except Exception as e:
             logging.exception("Error mostrando dashboard:")
             raise web.HTTPInternalServerError(text=str(e))
 
     # ───────────────────────────────
-    # 🔁 Forzar auditoría desde el Dashboard
+    # 🔁 Forzar auditoría desde Dashboard
     # ───────────────────────────────
     async def trigger_audit(self, request: web.Request):
         try:
@@ -91,8 +85,10 @@ class Dashboard:
                     status=403
                 )
 
-            # Ejecutar auditoría manual
-            await run_full_audit(request.app["bot"], self.db, b["slug"])
+            bot = request.app["bot"]
+            refresh_twitch_token = request.app["refresh_twitch_token"]
+
+            await run_full_audit(bot, self.db, slug, refresh_twitch_token)
 
             return web.json_response({
                 "status": "ok",
