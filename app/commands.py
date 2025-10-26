@@ -71,6 +71,22 @@ class Commands:
         if update.effective_chat.type != "private":
             return await update.message.reply_text("⚠️ Usa este comando en privado.")
         user = update.effective_user
+    
+        # 🆕 Guardar o actualizar datos del usuario en telegram_users
+        try:
+            await self.db.exec("""
+                INSERT INTO telegram_users (telegram_id, username, first_name, last_name)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    last_name = EXCLUDED.last_name;
+            """, user.id, user.username, user.first_name, user.last_name)
+            logging.info(f"💾 Guardado en telegram_users: {user.first_name} {user.last_name} (@{user.username})")
+        except Exception as e:
+            logging.warning(f"⚠️ No se pudo guardar datos de Telegram: {e}")
+    
         args = context.args if context.args else []
         if not args:
             return await update.message.reply_text("⚠️ Usa el enlace del streamer. Ejemplo: /start *nickdelstreamer* ")
@@ -108,7 +124,8 @@ class Commands:
         await update.message.reply_text(
             f"Pulsa el botón para vincular tu Twitch y comprobar si eres sub de {b['display_name']}: \n\n"
             f"⚠️ La vinculación solo funciona desde PC si se tiene la doble verificación o autenticación.\n",
-            reply_markup=keyboard, parse_mode="Markdown"
+            reply_markup=keyboard,
+            parse_mode="Markdown"
         )
         
     # ───────────────────────────────
