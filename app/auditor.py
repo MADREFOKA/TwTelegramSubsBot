@@ -20,7 +20,7 @@ async def run_full_audit(bot, db: Database, slug: str, refresh_twitch_token):
         logging.info(f"🔎 Iniciando auditoría para {slug} ({group_id})")
 
         members = await db.all("""
-            SELECT telegram_id, username, twitch_login, is_subscribed
+            SELECT telegram_id, username, twitch_id, is_subscribed
             FROM group_members
             WHERE group_id=%s
         """, group_id)
@@ -53,7 +53,7 @@ async def run_full_audit(bot, db: Database, slug: str, refresh_twitch_token):
                 resp = requests.get(
                     "https://api.twitch.tv/helix/subscriptions/user",
                     headers=headers,
-                    params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_login"]},
+                    params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
                     timeout=10
                 )
                 data = resp.json().get("data", [])
@@ -65,16 +65,16 @@ async def run_full_audit(bot, db: Database, slug: str, refresh_twitch_token):
                 if not still_sub:
                     expulsados += 1
                     motivo = "ya no es sub"
-                    await db.exec("INSERT INTO audit_details (audit_id, telegram_id, username, twitch_login, accion, motivo) VALUES (%s,%s,%s,%s,'expulsado',%s)",
-                                  audit_id, tg_id, m["username"], m["twitch_login"], motivo)
+                    await db.exec("INSERT INTO audit_details (audit_id, telegram_id, username, twitch_id, accion, motivo) VALUES (%s,%s,%s,%s,'expulsado',%s)",
+                                  audit_id, tg_id, m["username"], m["twitch_id"], motivo)
                     await bot.ban_chat_member(group_id, tg_id)
                     await bot.unban_chat_member(group_id, tg_id)
                     await db.exec("DELETE FROM group_members WHERE group_id=%s AND telegram_id=%s", group_id, tg_id)
 
             except Exception as e:
                 fallos += 1
-                await db.exec("INSERT INTO audit_details (audit_id, telegram_id, username, twitch_login, accion, motivo) VALUES (%s,%s,%s,%s,'fallo',%s)",
-                              audit_id, tg_id, m["username"], m["twitch_login"], str(e))
+                await db.exec("INSERT INTO audit_details (audit_id, telegram_id, username, twitch_id, accion, motivo) VALUES (%s,%s,%s,%s,'fallo',%s)",
+                              audit_id, tg_id, m["username"], m["twitch_id"], str(e))
                 logging.warning(f"⚠️ Error verificando {m['username']}: {e}")
 
         # 🔹 Actualizar totales en audit_logs
