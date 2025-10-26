@@ -72,7 +72,7 @@ class Commands:
             return await update.message.reply_text("⚠️ Usa este comando en privado.")
         user = update.effective_user
     
-        # 🆕 Guardar o actualizar datos del usuario en telegram_users
+        # 🧾 Guardar datos básicos de Telegram en telegram_users
         try:
             await self.db.exec("""
                 INSERT INTO telegram_users (telegram_id, username, first_name, last_name)
@@ -83,18 +83,21 @@ class Commands:
                     first_name = EXCLUDED.first_name,
                     last_name = EXCLUDED.last_name;
             """, user.id, user.username, user.first_name, user.last_name)
-            logging.info(f"💾 Guardado en telegram_users: {user.first_name} {user.last_name} (@{user.username})")
+            logging.info(f"💾 Datos Telegram actualizados: {user.first_name} {user.last_name} (@{user.username})")
         except Exception as e:
             logging.warning(f"⚠️ No se pudo guardar datos de Telegram: {e}")
     
+        # 📡 Continuar con la vinculación normal
         args = context.args if context.args else []
         if not args:
-            return await update.message.reply_text("⚠️ Usa el enlace del streamer. Ejemplo: /start *nickdelstreamer* ")
+            return await update.message.reply_text(
+                "⚠️ Usa el enlace del streamer. Ejemplo: /start *nickdelstreamer* "
+            )
     
-        # 👇 El argumento puede ser slug o display_name (no lo forzamos a lower)
+        # 👇 El argumento puede ser slug o display_name
         arg = args[0]
     
-        # Intentar buscar primero por broadcaster_id, luego display_name o slug
+        # Buscar broadcaster por id, slug o display_name
         b = await self.db.one(
             """
             SELECT * FROM broadcasters
@@ -106,6 +109,7 @@ class Commands:
         if not b:
             return await update.message.reply_text("❌ Este streamer no está vinculado.")
     
+        # Generar estado OAuth
         state = self._gen_state()
         await self.db.exec(
             "INSERT INTO oauth_states(state,telegram_id,purpose,created_at,broadcaster_id) VALUES(%s,%s,%s,%s,%s)",
@@ -119,11 +123,10 @@ class Commands:
             f"&response_type=code&scope={scope}&state={state}&force_verify=true"
         )
     
-        # 🔹 Mostrar display_name real, no slug
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💜 Verificar suscripción", url=url)]])
         await update.message.reply_text(
-            f"Pulsa el botón para vincular tu Twitch y comprobar si eres sub de {b['display_name']}: \n\n"
-            f"⚠️ La vinculación solo funciona desde PC si se tiene la doble verificación o autenticación.\n",
+            f"Pulsa el botón para vincular tu Twitch y comprobar si eres sub de {b['display_name']}:\n\n"
+            f"⚠️ Si tienes 2FA o autenticación en Twitch, usa un PC para completar la vinculación.",
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
