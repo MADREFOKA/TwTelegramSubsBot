@@ -109,3 +109,38 @@ class Dashboard:
                 {"status": "error", "msg": f"Error interno: {e}"},
                 status=500
             )
+            
+    # ───────────────────────────────
+    # 🔍 Detalles de una auditoría (solo expulsados o fallos)
+    # ───────────────────────────────
+    @aiohttp_jinja2.template("audit_details.html")
+    async def audit_details(self, request):
+        try:
+            audit_id = request.match_info.get("audit_id")
+            if not audit_id:
+                raise web.HTTPBadRequest(text="Falta audit_id.")
+    
+            # Buscar la auditoría
+            audit = await self.db.one("""
+                SELECT * FROM audit_logs WHERE id=%s
+            """, audit_id)
+            if not audit:
+                raise web.HTTPNotFound(text="Auditoría no encontrada.")
+    
+            # Buscar detalles de usuarios expulsados o con fallos
+            detalles = await self.db.all("""
+                SELECT username, motivo, resultado
+                FROM audit_details
+                WHERE audit_id=%s
+                AND (resultado='expulsado' OR resultado='fallo')
+                ORDER BY resultado DESC
+            """, audit_id)
+    
+            return {
+                "audit": audit,
+                "detalles": detalles
+            }
+    
+        except Exception as e:
+            logging.exception("Error mostrando detalles de auditoría:")
+            raise web.HTTPInternalServerError(text=str(e))
