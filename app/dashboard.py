@@ -98,9 +98,8 @@ class Dashboard:
             if not bot_instance:
                 raise web.HTTPInternalServerError(text="❌ No se encontró instancia del bot en la app.")
 
-            await run_full_audit(bot_instance.app.bot, self.db, b["slug"], bot_instance.refresh_twitch_token)
+            await run_full_audit(bot_instance, self.db, b["slug"], bot_instance.refresh_twitch_token)
 
-            # Redirigir al dashboard con notificación
             raise web.HTTPFound(f"/dashboard/{slug}?token={token}&audit_done=1")
 
         except Exception as e:
