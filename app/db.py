@@ -22,6 +22,9 @@ class Database:
     async def exec(self, query: str, *params):
         for attempt in range(2):
             try:
+                # 🔧 Fuerza conversión de booleanos Python → SQL
+                params = tuple(True if p is True else False if p is False else p for p in params)
+    
                 async with self.pool.connection() as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(query.replace("?", "%s"), params)
