@@ -48,8 +48,9 @@ async def run_full_audit(bot, db: Database, slug: str, refresh_twitch_token):
             tg_id = m["telegram_id"]
             if tg_id in privileged_ids or tg_id in admin_ids:
                 continue
-
+        
             try:
+                # 🔍 Comprobación en Twitch
                 resp = requests.get(
                     "https://api.twitch.tv/helix/subscriptions/user",
                     headers=headers,
@@ -58,25 +59,48 @@ async def run_full_audit(bot, db: Database, slug: str, refresh_twitch_token):
                 )
                 data = resp.json().get("data", [])
                 still_sub = len(data) > 0
-
-                # 🔸 Actualizar estado local
-                await db.exec("UPDATE group_members SET is_subscribed=%s WHERE telegram_id=%s", still_sub, tg_id)
-
+        
+                # 🔸 Actualizar estado local en ambas tablas
+                await db.exec("""
+                    UPDATE group_members
+                    SET is_subscribed=%s
+                    WHERE telegram_id=%s AND broadcaster_id=%s
+                """, still_sub, tg_id, broadcaster_id)
+        
+                await db.exec("""
+                    UPDATE telegram_users
+                    SET is_subscribed=%s
+                    WHERE telegram_id=%s AND streamer_id=%s
+                """, still_sub, tg_id, broadcaster_id)
+        
+                # 🚫 Si ya no es sub → expulsar y registrar
                 if not still_sub:
                     expulsados += 1
                     motivo = "ya no es sub"
-                    await db.exec("INSERT INTO audit_details (audit_id, telegram_id, username, twitch_id, accion, motivo) VALUES (%s,%s,%s,%s,'expulsado',%s)",
-                                  audit_id, tg_id, m["username"], m["twitch_id"], motivo)
+                    await db.exec("""
+                        INSERT INTO audit_details
+                        (audit_id, telegram_id, username, twitch_id, accion, motivo)
+                        VALUES (%s,%s,%s,%s,'expulsado',%s)
+                    """, audit_id, tg_id, m["username"], m["twitch_id"], motivo)
+        
+                    # Expulsar del grupo
                     await bot.ban_chat_member(group_id, tg_id)
                     await bot.unban_chat_member(group_id, tg_id)
-                    await db.exec("DELETE FROM group_members WHERE group_id=%s AND telegram_id=%s", group_id, tg_id)
-
+        
+                    # Eliminar del grupo (solo si coincide el broadcaster)
+                    await db.exec("""
+                        DELETE FROM group_members
+                        WHERE group_id=%s AND telegram_id=%s AND broadcaster_id=%s
+                    """, group_id, tg_id, broadcaster_id)
+        
             except Exception as e:
                 fallos += 1
-                await db.exec("INSERT INTO audit_details (audit_id, telegram_id, username, twitch_id, accion, motivo) VALUES (%s,%s,%s,%s,'fallo',%s)",
-                              audit_id, tg_id, m["username"], m["twitch_id"], str(e))
+                await db.exec("""
+                    INSERT INTO audit_details (audit_id, telegram_id, username, twitch_id, accion, motivo)
+                    VALUES (%s,%s,%s,%s,'fallo',%s)
+                """, audit_id, tg_id, m["username"], m["twitch_id"], str(e))
                 logging.warning(f"⚠️ Error verificando {m['username']}: {e}")
-
+        
         # 🔹 Actualizar totales en audit_logs
         await db.exec("UPDATE audit_logs SET total_miembros=%s, expulsados=%s, fallos=%s, fecha_auditoria=NOW() WHERE id=%s",
                       total, expulsados, fallos, audit_id)
