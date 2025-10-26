@@ -1,7 +1,9 @@
 # app/dashboard.py
+import os
 import logging
-from aiohttp import web
 import aiohttp_jinja2
+from aiohttp import web
+from app.auditor import run_full_audit
 
 class Dashboard:
     def __init__(self, db):
@@ -11,14 +13,15 @@ class Dashboard:
     # 📊 Página principal del Dashboard
     # ───────────────────────────────
     @aiohttp_jinja2.template("dashboard.html")
-    async def page(self, request: web.Request):
+    async def page(self, request):
         try:
-            slug = request.match_info["slug"]
+            slug = request.match_info.get("slug")
             token = request.query.get("token")
+            audit_done = request.query.get("audit_done")
 
             # Validar acceso al Dashboard
             streamer = await self.db.one("""
-                SELECT display_name, slug, profile_image_url, broadcaster_id, group_id
+                SELECT display_name, slug, profile_image_url, dashboard_token
                 FROM broadcasters
                 WHERE slug=%s AND dashboard_token=%s
             """, slug, token)
@@ -26,25 +29,44 @@ class Dashboard:
             if not streamer:
                 raise web.HTTPFound("/")
 
-            # Obtener últimas auditorías
-            auditorias = await self.db.all("""
-                SELECT id, total_miembros, expulsados, fallos, fecha_auditoria
+            # Obtener logs de auditoría (últimas 20)
+            logs = await self.db.all("""
+                SELECT total_miembros, expulsados, fallos, fecha_auditoria
                 FROM audit_logs
                 WHERE streamer_slug=%s
                 ORDER BY fecha_auditoria DESC
-                LIMIT 15
+                LIMIT 20
             """, slug)
+
+            # 🔧 Formatear fechas legibles
+            for l in logs:
+                if l.get("fecha_auditoria"):
+                    l["fecha_auditoria"] = l["fecha_auditoria"].strftime("%d/%m/%Y %H:%M")
+
+            resumen = logs[0] if logs else None
 
             avatar_url = (
                 streamer.get("profile_image_url")
                 or "https://static.twitchcdn.net/assets/favicon-32-e29e246c157142c94346.png"
             )
 
+            # Obtener lista de privilegiados
+            privileged = await self.db.all("""
+                SELECT username, telegram_id, added_at
+                FROM privileged_users
+                WHERE streamer_slug=%s
+                ORDER BY added_at DESC
+            """, slug)
+
             return {
                 "streamer": streamer,
-                "auditorias": auditorias,
-                "token": token,
+                "logs": logs,
+                "resumen": resumen,
                 "avatar_url": avatar_url,
+                "token": token,
+                "privileged_users": privileged,
+                "audit_done": audit_done,
+                "base_url": os.getenv("BASE_URL"),
             }
 
         except Exception as e:
@@ -52,27 +74,38 @@ class Dashboard:
             raise web.HTTPInternalServerError(text=str(e))
 
     # ───────────────────────────────
-    # 🔍 Detalles de auditoría
+    # 🔁 Forzar auditoría desde el Dashboard
     # ───────────────────────────────
-    async def audit_details(self, request: web.Request):
+    async def trigger_audit(self, request: web.Request):
         try:
-            audit_id = request.match_info.get("audit_id")
+            slug = request.match_info.get("slug")
+            token = request.query.get("token")
 
-            detalles = await self.db.all("""
-                SELECT username, twitch_login, accion, motivo, timestamp
-                FROM audit_details
-                WHERE audit_id=%s AND accion IN ('expulsado', 'fallo')
-                ORDER BY id ASC
-            """, audit_id)
+            # Validar acceso del streamer
+            b = await self.db.one(
+                "SELECT * FROM broadcasters WHERE slug=%s AND dashboard_token=%s",
+                slug, token
+            )
+            if not b:
+                return web.json_response(
+                    {"status": "error", "msg": "Token inválido o no autorizado."},
+                    status=403
+                )
 
-            for d in detalles:
-                if not d.get("username"):
-                    d["username"] = "(usuario desconocido)"
-                if not d.get("twitch_login"):
-                    d["twitch_login"] = "—"
+            # Ejecutar auditoría
+            app = request.app
+            bot_instance = app.get("bot")
+            if not bot_instance:
+                raise web.HTTPInternalServerError(text="❌ No se encontró instancia del bot en la app.")
 
-            return web.json_response(detalles)
+            await run_full_audit(bot_instance.app.bot, self.db, b["slug"], bot_instance.refresh_twitch_token)
+
+            # Redirigir al dashboard con notificación
+            raise web.HTTPFound(f"/dashboard/{slug}?token={token}&audit_done=1")
 
         except Exception as e:
-            logging.exception("Error cargando detalles de auditoría:")
-            return web.json_response({"error": str(e)}, status=500)
+            logging.exception("Error en trigger_audit:")
+            return web.json_response(
+                {"status": "error", "msg": f"Error interno: {e}"},
+                status=500
+            )
