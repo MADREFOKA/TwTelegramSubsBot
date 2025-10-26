@@ -62,11 +62,13 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
 
             motivo = None
             linked_twitch_id = m.get("linked_twitch_id")
+
+            # Sin vínculo → expulsar
             if not linked_twitch_id:
                 motivo = "no vinculado"
                 sin_vinculo += 1
             else:
-                # Consultar estado real en Twitch
+                # Consultar estado real en Twitch con token del broadcaster
                 try:
                     r = requests.get(
                         f"{cfg.TW_API}/subscriptions/user",
@@ -76,17 +78,26 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
                     )
                     res_json = r.json()
                     sigue_sub = bool(res_json.get("data"))
+
+                    # Actualizar en ambas tablas
                     await db.exec(
                         "UPDATE group_members SET is_subscribed=%s WHERE telegram_id=%s",
                         sigue_sub, tg_id
                     )
+                    await db.exec(
+                        "UPDATE telegram_users SET is_subscribed=%s WHERE telegram_id=%s",
+                        sigue_sub, tg_id
+                    )
+
+                    logging.info(f"👤 @{m.get('username')} ({tg_id}) → {'✅ sub' if sigue_sub else '❌ no sub'}")
+
                     if not sigue_sub:
                         motivo = "no sub"
                 except Exception as e:
                     logging.warning(f"⚠️ No se pudo verificar sub de {m.get('username')} ({tg_id}): {e}")
                     fallos += 1
 
-            # Inactividad (>30 días)
+            # Inactividad (>30 días desde join)
             if not motivo and m.get("joined_at"):
                 try:
                     dias = (ahora - m["joined_at"]).days
@@ -100,7 +111,11 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
                 try:
                     await bot.ban_chat_member(group_id, tg_id)
                     await bot.unban_chat_member(group_id, tg_id)
+
+                    # Eliminar de ambas tablas
                     await db.exec("DELETE FROM group_members WHERE telegram_id=%s", tg_id)
+                    await db.exec("UPDATE telegram_users SET is_subscribed=FALSE WHERE telegram_id=%s", tg_id)
+
                     expulsados += 1
                     logging.info(f"🚫 Expulsado @{m.get('username')} ({tg_id}) — {motivo}")
                     await asyncio.sleep(1.2)  # ⏳ Anti rate-limit
@@ -147,6 +162,7 @@ async def run_full_audit(bot, db: Database, slug: str, cfg=None, refresh_twitch_
         logging.exception(f"❌ Error en run_full_audit({slug}): {e}")
         raise
 
+
 # ──────────────────────────────────────────────
 # 🧹 Clase principal de auditorías
 # ──────────────────────────────────────────────
@@ -171,7 +187,7 @@ class Auditor:
 
         slug = b["slug"]
         try:
-            await run_full_audit(request.app["bot"], self.db, b["slug"], self.cfg, self.refresh_twitch_token)
+            await run_full_audit(context.bot, self.db, b["slug"], self.cfg, self.refresh_twitch_token)
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("📊 Abrir Dashboard",
                 url=f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}")]])
@@ -196,7 +212,7 @@ class Auditor:
         try:
             job_queue.run_daily(
                 _weekly_task,
-                time=dtime(hour=7, minute=0),  # 09:00 UTC
+                time=dtime(hour=7, minute=0),  # 09:00 UTC (ajustable)
                 days=(0,), 
                 name="weekly_full_audit"
             )
