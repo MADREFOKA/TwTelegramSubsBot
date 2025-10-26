@@ -155,11 +155,20 @@ class OAuthHandlers:
 
             # Guardar usuario en telegram_users
             await self.db.exec("""
-                INSERT INTO telegram_users (telegram_id, username, linked_twitch_id)
-                VALUES (%s,%s,%s)
-                ON CONFLICT (telegram_id)
-                DO UPDATE SET username=EXCLUDED.username, linked_twitch_id=EXCLUDED.linked_twitch_id
-            """, row["telegram_id"], me["login"], me["id"])
+                INSERT INTO group_members (
+                    group_id, telegram_id, username, twitch_login,
+                    broadcaster_id, streamer_slug, joined_at, is_subscribed
+                ) VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s)
+                ON CONFLICT (group_id, telegram_id)
+                DO UPDATE SET
+                    username=EXCLUDED.username,
+                    twitch_login=EXCLUDED.twitch_login,
+                    is_subscribed=EXCLUDED.is_subscribed,
+                    joined_at=NOW();
+            """,
+                b["group_id"], row["telegram_id"], me["login"], me["id"],  # 👈 ID real de Twitch aquí
+                b["broadcaster_id"], b["slug"], is_sub
+            )
 
             # Obtener broadcaster asociado
             b = await self.db.one("SELECT * FROM broadcasters WHERE broadcaster_id=%s", row["broadcaster_id"])
