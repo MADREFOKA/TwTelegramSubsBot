@@ -113,24 +113,26 @@ class OAuthHandlers:
             logging.exception("Error en twitch_callback_setup:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
 
-    # ───────────────────────────────────────────────
+        # ───────────────────────────────────────────────
     # CALLBACK USUARIO / VIEWER
     # ───────────────────────────────────────────────
     async def twitch_callback_user(self, request: web.Request):
+        import secrets
         try:
             q = request.rel_url.query
             code, state = q.get("code"), q.get("state")
             if not code or not state:
                 return web.Response(text="❌ Falta parámetros.", status=400)
-    
+
+            # Buscar estado OAuth válido
             row = await self.db.one(
                 "SELECT * FROM oauth_states WHERE state=%s AND purpose='user_link'",
                 state
             )
             if not row:
                 return web.Response(text="❌ Estado inválido o caducado.", status=400)
-    
-            # Intercambio del code por tokens de usuario
+
+            # Intercambio del código por token
             data = requests.post(self.cfg.TW_TOKEN, data={
                 "client_id": self.cfg.client_id,
                 "client_secret": self.cfg.client_secret,
@@ -138,45 +140,37 @@ class OAuthHandlers:
                 "code": code,
                 "redirect_uri": f"{self.cfg.base_url}/twitch/callback"
             }, timeout=15).json()
-    
+
             if "access_token" not in data:
                 return web.Response(text=f"Error al obtener token: {data}", status=400)
-    
+
             access_token = data["access_token"]
             headers_user = {
                 "Authorization": f"Bearer {access_token}",
                 "Client-Id": self.cfg.client_id
             }
-    
-            # Obtener información del usuario de Twitch
+
+            # Obtener datos del usuario de Twitch
             me = requests.get(f"{self.cfg.TW_API}/users", headers=headers_user, timeout=15).json()["data"][0]
-    
-            # Guardar en telegram_users (twitch_id + login + estado inicial)
+
+            # Guardar usuario en telegram_users
             await self.db.exec("""
-                INSERT INTO group_members (
-                    group_id, telegram_id, username, twitch_login, linked_twitch_id,
-                    broadcaster_id, streamer_slug, is_subscribed, joined_at
-                )
-                SELECT group_id, %s, %s, %s, %s, %s, %s, TRUE, NOW()
-                FROM broadcasters WHERE broadcaster_id=%s
-                ON CONFLICT (group_id, telegram_id)
-                DO UPDATE SET 
-                    is_subscribed=EXCLUDED.is_subscribed,
-                    joined_at=EXCLUDED.joined_at,
-                    linked_twitch_id=EXCLUDED.linked_twitch_id
-            """, row["telegram_id"], me["login"], me["login"], me["id"],
-                 b["broadcaster_id"], b["slug"], b["broadcaster_id"])
-            
-            # Buscar broadcaster vinculado
+                INSERT INTO telegram_users (telegram_id, username, linked_twitch_id)
+                VALUES (%s,%s,%s)
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET username=EXCLUDED.username, linked_twitch_id=EXCLUDED.linked_twitch_id
+            """, row["telegram_id"], me["login"], me["id"])
+
+            # Obtener broadcaster asociado
             b = await self.db.one("SELECT * FROM broadcasters WHERE broadcaster_id=%s", row["broadcaster_id"])
             if not b:
                 return web.Response(text="Streamer no encontrado.", status=400)
-    
-            # Refrescar token de broadcaster si es necesario
+
+            # Refrescar token si ha caducado
             b_access = await self.refresh_twitch_token(b)
             headers_b = {"Authorization": f"Bearer {b_access}", "Client-Id": self.cfg.client_id}
-    
-            # Verificar si el usuario está suscrito a ese canal
+
+            # Verificar si el usuario es sub
             r = requests.get(
                 f"{self.cfg.TW_API}/subscriptions/user",
                 headers=headers_user,
@@ -186,48 +180,52 @@ class OAuthHandlers:
             res_json = r.json()
             data_sub = res_json.get("data", [])
             logging.info(f"Twitch API subscriptions response: {res_json}")
-    
-            # 🔹 Actualizar estado de sub en BD (ambas tablas)
-            is_sub = bool(data_sub)
-            await self.db.exec(
-                "UPDATE telegram_users SET is_subscribed=%s WHERE telegram_id=%s",
-                is_sub, row["telegram_id"]
-            )
-    
-            # 🔹 Guardar en group_members solo si es sub
-            if is_sub:
-                await self.db.exec("""
-                    INSERT INTO group_members (
-                        group_id, telegram_id, username, twitch_login, linked_twitch_id,
-                        broadcaster_id, streamer_slug, is_subscribed, joined_at
-                    )
-                    SELECT group_id, %s, %s, %s, %s, %s, %s, TRUE, NOW()
-                    FROM broadcasters WHERE broadcaster_id=%s
-                    ON CONFLICT (group_id, telegram_id)
-                    DO UPDATE SET 
-                        is_subscribed=EXCLUDED.is_subscribed,
-                        joined_at=EXCLUDED.joined_at,
-                        linked_twitch_id=EXCLUDED.linked_twitch_id
-                """, row["telegram_id"], me["login"], me["login"], me["id"],
-                     b["broadcaster_id"], b["slug"], b["broadcaster_id"])
-    
-            # 🔹 Preparar mensaje y botón según su estado
+
+            # ───────────────────────────────
+            # Detección del tipo de usuario
+            # ───────────────────────────────
             if me["id"] == b["broadcaster_id"]:
                 msg, keyboard = viewer_is_owner(me["display_name"], b["display_name"], b.get("invite_link"))
-            elif is_sub:
+                is_sub = True
+            elif data_sub:
                 msg, keyboard = viewer_is_sub(me["display_name"], b["display_name"], b.get("invite_link"))
+                is_sub = True
             else:
                 msg, keyboard = viewer_not_sub(me["display_name"], b["display_name"], b.get("free_invite_link"))
-    
-            # Enviar mensaje de resultado
+                is_sub = False
+
+            # ───────────────────────────────
+            # Guardar en group_members
+            # ───────────────────────────────
+            try:
+                await self.db.exec("""
+                    INSERT INTO group_members (
+                        group_id, telegram_id, username, twitch_login,
+                        broadcaster_id, streamer_slug, joined_at, is_subscribed
+                    ) VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s)
+                    ON CONFLICT (group_id, telegram_id)
+                    DO UPDATE SET
+                        username=EXCLUDED.username,
+                        twitch_login=EXCLUDED.twitch_login,
+                        is_subscribed=EXCLUDED.is_subscribed,
+                        joined_at=NOW();
+                """,
+                    b["group_id"], row["telegram_id"], me["login"], me["login"],
+                    b["broadcaster_id"], b["slug"], is_sub
+                )
+                logging.info(f"💾 Guardado en group_members: @{me['login']} ({row['telegram_id']}) - sub={is_sub}")
+            except Exception as e:
+                logging.warning(f"⚠️ No se pudo guardar en group_members: {e}")
+
+            # Enviar mensaje final
             await self.send_tg(row["telegram_id"], msg, html=True, reply_markup=keyboard)
-    
-            # Redirección de cierre
+
             return web.Response(
                 text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
                      "<h3>✅ Verificación completa. Puedes volver a Telegram.</h3>",
                 content_type="text/html"
             )
+
         except Exception as e:
             logging.exception("Error en twitch_callback_user:")
             return web.Response(text=f"❌ Error interno: {e}", status=500)
