@@ -110,6 +110,21 @@ async def run_full_audit(bot, db: Database, slug: str, refresh_twitch_token):
     except Exception as e:
         logging.exception(f"❌ Error en run_full_audit({slug}): {e}")
 
+     finally:
+        # 🔒 Bloque de seguridad: evita que los campos queden en NULL
+        try:
+            await db.exec("""
+                UPDATE audit_logs
+                SET total_miembros = COALESCE(total_miembros, %s),
+                    expulsados = COALESCE(expulsados, %s),
+                    fallos = COALESCE(fallos, %s),
+                    fecha_auditoria = COALESCE(fecha_auditoria, NOW())
+                WHERE id=%s
+            """, total or 0, expulsados or 0, fallos or 0, audit_id)
+            logging.info(f"🧾 Auditoría {audit_id} normalizada correctamente (NULLs reemplazados).")
+        except Exception as e:
+            logging.warning(f"⚠️ No se pudo completar la normalización de la auditoría {audit_id}: {e}")
+            
 class Auditor:
     def __init__(self, db, cfg, send_tg, refresh_twitch_token):
         self.db = db
