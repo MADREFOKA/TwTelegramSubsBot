@@ -72,24 +72,27 @@ class Commands:
             return await update.message.reply_text("⚠️ Usa este comando en privado.")
         user = update.effective_user
     
-        # 🧾 Guardar datos básicos de Telegram en telegram_users
-        try:
-            # Buscar el broadcaster según el argumento del /start
-            args = context.args if context.args else []
-            if not args:
-                return await update.message.reply_text("⚠️ Usa el enlace del streamer. Ejemplo: /start *nickdelstreamer*")
-        
-            arg = args[0]
-            b = await self.db.one(
-                """
-                SELECT * FROM broadcasters
-                WHERE broadcaster_id=%s OR LOWER(slug)=%s OR LOWER(display_name)=LOWER(%s)
-                """,
-                arg, arg.lower(), arg
+        # Leer argumento /start <slug|id|displayname>
+        args = context.args if context.args else []
+        if not args:
+            return await update.message.reply_text(
+                "⚠️ Usa el enlace del streamer. Ejemplo: /start *nickdelstreamer* "
             )
-            if not b:
-                return await update.message.reply_text("❌ Este streamer no está vinculado.")
-        
+        arg = args[0]
+
+        # Buscar broadcaster por id, slug o display_name
+        b = await self.db.one(
+            """
+            SELECT * FROM broadcasters
+            WHERE broadcaster_id=%s OR LOWER(slug)=%s OR LOWER(display_name)=LOWER(%s)
+            """,
+            arg, arg.lower(), arg
+        )
+        if not b:
+            return await update.message.reply_text("❌ Este streamer no está vinculado.")
+
+        # 🧾 Guardar datos básicos de Telegram en telegram_users incluyendo streamer_id
+        try:
             await self.db.exec("""
                 INSERT INTO telegram_users (telegram_id, username, first_name, last_name, streamer_id)
                 VALUES (%s, %s, %s, %s, %s)
@@ -100,33 +103,12 @@ class Commands:
                     last_name = EXCLUDED.last_name,
                     streamer_id = EXCLUDED.streamer_id;
             """, user.id, user.username, user.first_name, user.last_name, b["broadcaster_id"])
-        
-            logging.info(f"💾 Telegram user actualizado con streamer_id={b['broadcaster_id']}: {user.first_name} {user.last_name} (@{user.username})")
-        
+            logging.info(
+                f"💾 Datos Telegram actualizados: {user.first_name} {user.last_name} "
+                f"(@{user.username}) streamer_id={b['broadcaster_id']}"
+            )
         except Exception as e:
             logging.warning(f"⚠️ No se pudo guardar datos de Telegram: {e}")
-
-        # 📡 Continuar con la vinculación normal
-        args = context.args if context.args else []
-        if not args:
-            return await update.message.reply_text(
-                "⚠️ Usa el enlace del streamer. Ejemplo: /start *nickdelstreamer* "
-            )
-    
-        # 👇 El argumento puede ser slug o display_name
-        arg = args[0]
-    
-        # Buscar broadcaster por id, slug o display_name
-        b = await self.db.one(
-            """
-            SELECT * FROM broadcasters
-            WHERE broadcaster_id=%s OR LOWER(slug)=%s OR LOWER(display_name)=LOWER(%s)
-            """,
-            arg, arg.lower(), arg
-        )
-    
-        if not b:
-            return await update.message.reply_text("❌ Este streamer no está vinculado.")
     
         # Generar estado OAuth
         state = self._gen_state()
@@ -174,7 +156,10 @@ class Commands:
             await update.message.delete()
         except:
             pass
-        await self.send_tg(b["owner_telegram_id"], f"✅ Grupo premium vinculado correctamente.\n\n💜 Enlace para viewers:\nhttps://t.me/{self.cfg.bot_username}?start={b['slug']}",)
+        await self.send_tg(
+            b["owner_telegram_id"],
+            f"✅ Grupo premium vinculado correctamente.\n\n💜 Enlace para viewers:\nhttps://t.me/{self.cfg.bot_username}?start={b['slug']}",
+        )
 
     # ───────────────────────────────
     # 🎁 /SETFREEGROUP — GRUPO GRATUITO
@@ -225,6 +210,118 @@ class Commands:
         )
 
     # ───────────────────────────────
+    # 🧹 /LIMPIEZA — LIMPIEZA INICIAL DEL GRUPO PREMIUM
+    # ───────────────────────────────
+    @safe_exec()
+    async def cmd_limpieza(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Limpieza inicial del grupo premium.
+        Se ejecuta en privado por el dueño.
+        Expulsa del grupo premium a cualquiera que NO esté suscrito
+        según telegram_users.is_subscribed para este streamer.
+        No toca admins ni privilegiados.
+        No genera auditoría ni afecta la gráfica.
+        """
+        chat = update.effective_chat
+        user = update.effective_user
+
+        # 1. Solo en privado
+        if chat.type != "private":
+            return await update.message.reply_text("⚠️ Usa este comando en privado conmigo.")
+
+        # 2. Confirmar que este usuario es dueño de un canal vinculado
+        b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+        if not b:
+            return await update.message.reply_text("❌ No tienes ningún canal vinculado. Usa /setup primero.")
+
+        group_id = b.get("group_id")
+        if not group_id:
+            return await update.message.reply_text("❌ Aún no has vinculado tu grupo premium con /setgroup.")
+
+        broadcaster_id = b["broadcaster_id"]
+
+        # 3. Obtener admins actuales del grupo (para no expulsarlos por error)
+        try:
+            admins = await context.bot.get_chat_administrators(group_id)
+            admin_ids = {a.user.id for a in admins}
+        except Exception as e:
+            admin_ids = set()
+            logging.warning(f"⚠️ No se pudieron obtener administradores del grupo {group_id}: {e}")
+
+        # 4. Obtener privilegiados (tabla privileged_users + owner)
+        privileged_ids = set(await self.db.get_privileged_ids(b["slug"])) | {b["owner_telegram_id"]}
+
+        # 5. Cargar TODOS los usuarios asociados a este streamer en telegram_users
+        rows = await self.db.all("""
+            SELECT telegram_id, username, first_name, last_name, is_subscribed
+            FROM telegram_users
+            WHERE streamer_id=%s
+        """, broadcaster_id)
+
+        if not rows:
+            return await update.message.reply_text("📭 No hay usuarios registrados aún para este canal.")
+
+        expulsados = 0
+        fallos = 0
+        saltados_privilegio = 0
+        saltados_admin = 0
+        ya_sub = 0
+
+        # 6. Recorrer cada usuario y expulsar del grupo a los NO suscritos
+        for r in rows:
+            tg_id = r["telegram_id"]
+            is_sub = r.get("is_subscribed", False)
+
+            # Saltar admins
+            if tg_id in admin_ids:
+                saltados_admin += 1
+                continue
+
+            # Saltar privilegiados
+            if tg_id in privileged_ids:
+                saltados_privilegio += 1
+                continue
+
+            # Si está marcado como sub -> no tocar
+            if is_sub:
+                ya_sub += 1
+                continue
+
+            # En este punto: no admin, no privilegiado, no sub => expulsar
+            try:
+                await context.bot.ban_chat_member(group_id, tg_id)
+                await context.bot.unban_chat_member(group_id, tg_id)
+                expulsados += 1
+                logging.info(f"🧹 Expulsado {tg_id} ({r['username']}) por limpieza inicial (no sub).")
+
+                # Limpieza también en group_members si estaba ahí
+                try:
+                    await self.db.exec("""
+                        DELETE FROM group_members
+                        WHERE group_id=%s AND telegram_id=%s AND broadcaster_id=%s
+                    """, group_id, tg_id, broadcaster_id)
+                except Exception as e:
+                    logging.warning(f"⚠️ No se pudo limpiar group_members para {tg_id}: {e}")
+
+            except Exception as e:
+                fallos += 1
+                logging.warning(f"⚠️ No se pudo expulsar {tg_id}: {e}")
+
+        # 7. Reporte final para el streamer, en privado
+        resumen = (
+            "🧹 Limpieza inicial completada.\n\n"
+            f"• Expulsados (no sub): {expulsados}\n"
+            f"• No expulsados por ser admin: {saltados_admin}\n"
+            f"• No expulsados por ser privilegiados: {saltados_privilegio}\n"
+            f"• Miembros que ya eran sub: {ya_sub}\n"
+            f"• Fallos al expulsar: {fallos}\n\n"
+            f"👑 Canal: {b['display_name']}\n"
+            f"👥 Grupo: {group_id}\n"
+        )
+
+        await update.message.reply_text(resumen)
+
+    # ───────────────────────────────
     # 🧬 AUXILIAR
     # ───────────────────────────────
     def _gen_state(self, n=32):
@@ -246,6 +343,7 @@ class Commands:
                 guide_message(),
                 disable_web_page_preview=True
             )
+
     # ───────────────────────────────
     # 👑 PRIVILEGIOS — Añadir / Eliminar / Listar
     # ───────────────────────────────
@@ -262,7 +360,9 @@ class Commands:
             return await update.message.reply_text("👉 Usa este comando respondiendo al usuario que quieras añadir.")
         target = update.message.reply_to_message.from_user
 
-        await self.db.add_privileged_user(b["slug"], b["broadcaster_id"], target.id, target.username, update.effective_user.id)
+        await self.db.add_privileged_user(
+            b["slug"], b["broadcaster_id"], target.id, target.username, update.effective_user.id
+        )
         await update.message.reply_text(f"✅ {target.username or target.first_name} añadido como usuario privilegiado.")
 
     @safe_exec()
@@ -296,4 +396,3 @@ class Commands:
             [f"• {r['username']} (ID: `{r['telegram_id']}`)" for r in rows]
         )
         await update.message.reply_text(text, parse_mode="Markdown")
-        
