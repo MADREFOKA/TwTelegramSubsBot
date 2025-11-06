@@ -2,7 +2,9 @@
 import logging
 import datetime
 import requests
+import asyncio
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from datetime import datetime, timedelta
 from datetime import time as dtime
 from app.db import Database
 from app.security import TokenCipher
@@ -82,14 +84,75 @@ async def run_full_audit(bot, db: Database, slug: str, refresh_twitch_token):
                     """, audit_id, tg_id, m["username"], m["twitch_id"], motivo)
 
                     # Expulsar del grupo
-                    await bot.ban_chat_member(group_id, tg_id)
-                    await bot.unban_chat_member(group_id, tg_id)
+                    expulsados_total = 0  # contador global fuera del bucle, si no lo tienes ya
+                    
+                    for i, m in enumerate(members, start=1):
+                        tg_id = m["telegram_id"]
+                        if tg_id in privileged_ids or tg_id in admin_ids:
+                            continue
+                    
+                        try:
+                            resp = requests.get(
+                                "https://api.twitch.tv/helix/subscriptions/user",
+                                headers=headers,
+                                params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
+                                timeout=10
+                            )
+                            data = resp.json().get("data", [])
+                            still_sub = len(data) > 0
+                    
+                            # 🔸 Actualizar estado local
+                            await db.exec("""
+                                UPDATE group_members
+                                SET is_subscribed=%s
+                                WHERE telegram_id=%s AND broadcaster_id=%s
+                            """, still_sub, tg_id, broadcaster_id)
+                    
+                            await db.exec("""
+                                UPDATE telegram_users
+                                SET is_subscribed=%s
+                                WHERE telegram_id=%s AND streamer_id=%s
+                            """, still_sub, tg_id, broadcaster_id)
+                    
+                            if not still_sub:
+                                expulsados += 1
+                                motivo = "ya no es sub"
+                    
+                                await db.exec("""
+                                    INSERT INTO audit_details
+                                    (audit_id, telegram_id, username, twitch_id, accion, motivo)
+                                    VALUES (%s,%s,%s,%s,'expulsado',%s)
+                                """, audit_id, tg_id, m["username"], m["twitch_id"], motivo)
+                    
+                                # 🔹 Expulsión temporal automática (30 seg)
+                                until = datetime.now() + timedelta(seconds=30)
+                                await bot.ban_chat_member(group_id, tg_id, until_date=until)
+                                logging.info(f"👢 Expulsado temporalmente {m['username']} ({tg_id}) de {group_id}")
+                    
+                                # 🔹 Eliminar de la base de datos
+                                await db.exec("""
+                                    DELETE FROM group_members
+                                    WHERE group_id=%s AND telegram_id=%s AND broadcaster_id=%s
+                                """, group_id, tg_id, broadcaster_id)
+                    
+                                expulsados_total += 1
+                    
+                                # 🔹 Evitar rate limit cada expulsión (~5 por segundo)
+                                await asyncio.sleep(0.2)
+                    
+                                # 🔹 Pausa cada 50 expulsiones
+                                if expulsados_total % 50 == 0:
+                                    logging.info("⏸️ Pausa de seguridad: 50 expulsiones procesadas, esperando 15s…")
+                                    await asyncio.sleep(15)
+                    
+                        except Exception as e:
+                            fallos += 1
+                            await db.exec("""
+                                INSERT INTO audit_details (audit_id, telegram_id, username, twitch_id, accion, motivo)
+                                VALUES (%s,%s,%s,%s,'fallo',%s)
+                            """, audit_id, tg_id, m["username"], m["twitch_id"], str(e))
+                            logging.warning(f"⚠️ Error verificando {m['username']}: {e}")
 
-                    # Eliminar de group_members
-                    await db.exec("""
-                        DELETE FROM group_members
-                        WHERE group_id=%s AND telegram_id=%s AND broadcaster_id=%s
-                    """, group_id, tg_id, broadcaster_id)
 
             except Exception as e:
                 fallos += 1
