@@ -1,3 +1,4 @@
+# app/bot.py
 import os
 import time
 import logging
@@ -8,7 +9,7 @@ import aiohttp_jinja2
 import jinja2
 from datetime import datetime, timezone
 from aiohttp import web
-from telegram.ext import ApplicationBuilder, CommandHandler, ChatMemberHandler, CallbackQueryHandler
+from telegram.ext import (ApplicationBuilder, CommandHandler, ChatMemberHandler, CallbackQueryHandler)
 from telegram import Update
 from app.db import Database
 from app.security import TokenCipher
@@ -46,10 +47,8 @@ class TwitchSubBot:
         self.auditor = Auditor(self.db, self.cfg, self.send_tg, self.refresh_twitch_token)
         self.dashboard = Dashboard(self.db)
 
-    # app/bot.py (fragmento dentro de la clase TwitchSubBot)
     async def send_tg(self, chat_id, text, md=False, html=False, disable_preview=False, reply_markup=None):
         """Envia mensajes a Telegram de forma segura."""
-        import aiohttp
         url = f"https://api.telegram.org/bot{self.cfg.token}/sendMessage"
         payload = {
             "chat_id": chat_id,
@@ -57,15 +56,15 @@ class TwitchSubBot:
             "disable_web_page_preview": disable_preview,
             "disable_notification": False,
         }
-    
+
         if md:
             payload["parse_mode"] = "Markdown"
         elif html:
             payload["parse_mode"] = "HTML"
-    
+
         if reply_markup:
             payload["reply_markup"] = reply_markup.to_dict()
-    
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=10) as resp:
@@ -132,6 +131,38 @@ class TwitchSubBot:
             logging.exception("Error procesando webhook:")
             return web.Response(text=f"Error interno: {e}", status=500)
 
+    # ───────────────────────────────────────────────
+    # 🔸 Nuevo handler: actualiza automáticamente group_members
+    # ───────────────────────────────────────────────
+    async def on_member_update(self, update: Update, context):
+        """Detecta entradas y salidas de miembros para mantener group_members sincronizado."""
+        member = update.chat_member
+        new_status = member.new_chat_member.status
+        old_status = member.old_chat_member.status
+        tg_user = member.new_chat_member.user
+        chat = update.effective_chat
+
+        try:
+            if new_status == "member" and old_status in ("left", "kicked"):
+                # Se unió al grupo
+                await self.db.exec("""
+                    INSERT INTO group_members (group_id, telegram_id, username, joined_at)
+                    VALUES (%s,%s,%s,NOW())
+                    ON CONFLICT (group_id, telegram_id) DO NOTHING;
+                """, chat.id, tg_user.id, tg_user.username)
+                logging.info(f"👋 Añadido a group_members: @{tg_user.username or tg_user.id}")
+
+            elif new_status in ("left", "kicked"):
+                # Se fue o fue expulsado
+                await self.db.exec("DELETE FROM group_members WHERE group_id=%s AND telegram_id=%s;",
+                                   chat.id, tg_user.id)
+                logging.info(f"🚪 Eliminado de group_members: @{tg_user.username or tg_user.id}")
+        except Exception as e:
+            logging.warning(f"⚠️ Error en on_member_update: {e}")
+
+    # ───────────────────────────────────────────────
+    # START principal
+    # ───────────────────────────────────────────────
     async def start(self):
         await self.db.init()
         app = ApplicationBuilder().token(self.cfg.token).build()
@@ -149,6 +180,9 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("priv_delete", self.cmds.cmd_priv_delete))
         app.add_handler(CommandHandler("priv_list", self.cmds.cmd_priv_list))
         app.add_handler(CallbackQueryHandler(self.cmds.on_callback, pattern="^guide_usage$"))
+
+        # 🔸 Nuevo: handler de entrada/salida de miembros
+        app.add_handler(ChatMemberHandler(self.on_member_update, ChatMemberHandler.CHAT_MEMBER))
 
         try:
             self.auditor.schedule_weekly_audit(app.job_queue)
