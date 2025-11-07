@@ -2,7 +2,9 @@ import time
 import logging
 import secrets
 import string
+import asyncio
 from urllib.parse import quote
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from app.utils.safe_exec import safe_exec
@@ -222,6 +224,9 @@ class Commands:
         No toca admins ni privilegiados.
         No genera auditoría ni afecta la gráfica.
         """
+        from datetime import datetime, timedelta
+        import asyncio
+
         chat = update.effective_chat
         user = update.effective_user
 
@@ -266,9 +271,10 @@ class Commands:
         saltados_privilegio = 0
         saltados_admin = 0
         ya_sub = 0
+        expulsados_total = 0
 
         # 6. Recorrer cada usuario y expulsar del grupo a los NO suscritos
-        for r in rows:
+        for i, r in enumerate(rows, start=1):
             tg_id = r["telegram_id"]
             is_sub = r.get("is_subscribed", False)
 
@@ -289,12 +295,14 @@ class Commands:
 
             # En este punto: no admin, no privilegiado, no sub => expulsar
             try:
-                await context.bot.ban_chat_member(group_id, tg_id)
-                await context.bot.unban_chat_member(group_id, tg_id)
+                # 🔹 Expulsión temporal (30 segundos)
+                until = datetime.now() + timedelta(seconds=30)
+                await context.bot.ban_chat_member(group_id, tg_id, until_date=until)
                 expulsados += 1
-                logging.info(f"🧹 Expulsado {tg_id} ({r['username']}) por limpieza inicial (no sub).")
+                expulsados_total += 1
+                logging.info(f"🧹 Expulsado temporalmente {tg_id} ({r['username']}) por limpieza inicial (no sub).")
 
-                # Limpieza también en group_members si estaba ahí
+                # 🔹 Limpieza también en group_members si estaba ahí
                 try:
                     await self.db.exec("""
                         DELETE FROM group_members
@@ -302,6 +310,14 @@ class Commands:
                     """, group_id, tg_id, broadcaster_id)
                 except Exception as e:
                     logging.warning(f"⚠️ No se pudo limpiar group_members para {tg_id}: {e}")
+
+                # 🔹 Pequeño delay para evitar flood (5 expulsiones/seg)
+                await asyncio.sleep(0.2)
+
+                # 🔹 Pausa cada 50 expulsiones
+                if expulsados_total % 50 == 0:
+                    logging.info("⏸️ Pausa de seguridad: 50 expulsiones procesadas, esperando 15s…")
+                    await asyncio.sleep(15)
 
             except Exception as e:
                 fallos += 1
