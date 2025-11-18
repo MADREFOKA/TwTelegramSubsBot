@@ -20,7 +20,7 @@ def setup_success(name, bot_username, slug, dash_link):
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📊 Abrir Dashboard", url=dash_link),
-            InlineKeyboardButton("🧭 Guía de uso", callback_data="show_guide")
+            InlineKeyboardButton("🧭 Guía de uso", callback_data="guide_usage")
         ]
     ])
 
@@ -38,8 +38,8 @@ def viewer_is_owner(name, slug, invite_link):
 # 💜 Mensaje si el usuario ES suscriptor
 def viewer_is_sub(name, slug, invite_link):
     msg = (
-        f"💜 ¡Gracias por tu apoyo, {name}!\n\n"
-        f"Eres <b>suscriptor</b> de <b>{slug}</b>.\n"
+        f"💜 ¡Gracias por tu apoyo al canal, {name}! 💜\n\n"
+        f"Eres <b>suscriptor</b> de <b>{slug}</b> y puedes acceder al grupo de la comunidad.\n"
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Entrar al grupo premium", url=invite_link)]
@@ -49,12 +49,13 @@ def viewer_is_sub(name, slug, invite_link):
 # ⚪ Mensaje si el usuario NO es suscriptor
 def viewer_not_sub(name, slug, free_link):
     msg = (
-        f"🤍 Hola {name}.\n\n"
+        f"🤍 Hola {name}.🤍\n\n"
         f"No eres suscriptor activo de <b>{slug}</b>.\n"
-        f"Vuelve a intentarlo cuando te hayas suscrito."
+        f"Vuelve a intentarlo haciendo <code>/start</code> cuando te hayas suscrito."
+        f"Igualmente tienes acceso al grupo gratuito con las reacciones una semana después."
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🆓 Entrar al grupo gratuito", url=free_link)]
+        [InlineKeyboardButton("🆓 Entrar al grupo gratuito.", url=free_link)]
     ]) if free_link else None
     return msg, keyboard
     
@@ -66,7 +67,7 @@ def guide_message() -> str:
         "2️⃣ (Opcional) Usa <code>/setfreegroup</code> en tu grupo GRATUITO para no-suscriptores.\n"
         "3️⃣ Comparte tu enlace de viewers (aparece tras hacer /setup).\n"
         "4️⃣ Los viewers hacen <code>/start tunick</code> o usan tu link para vincular Twitch.\n"
-        "5️⃣ Las auditorías/expulsiones son semanales, puedes hacerlas con <code>/auditnow</code> o con 'Forzar auditoría' del Dashboard.\n"
+        "5️⃣ Las auditorías/expulsiones son semanales, puedes hacerlas con <code>/auditnow</code>.\n"
         "6️⃣ Gestiona tu whitelist con:\n"
         "   <code>/priv_add @usuario</code>, <code>/priv_remove @usuario</code>, <code>/priv_list</code>.\n\n"
         "<b>ℹ️ Nota:</b> Las estadísticas y resultados se ven solo en el Dashboard."
