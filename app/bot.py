@@ -180,6 +180,8 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("priv_delete", self.cmds.cmd_priv_delete))
         app.add_handler(CommandHandler("priv_list", self.cmds.cmd_priv_list))
         app.add_handler(CallbackQueryHandler(self.cmds.on_callback, pattern="^guide_usage$"))
+        app.add_handler(CommandHandler("sync_members", self.cmds.cmd_sync_members))
+
         
         # 🔸 Nuevo: handler de entrada/salida de miembros
         app.add_handler(ChatMemberHandler(self.on_member_update, ChatMemberHandler.CHAT_MEMBER))
