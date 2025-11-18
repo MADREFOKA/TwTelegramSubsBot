@@ -412,4 +412,101 @@ class Commands:
             [f"• {r['username']} (ID: `{r['telegram_id']}`)" for r in rows]
         )
         await update.message.reply_text(text, parse_mode="Markdown")
-        
+
+    # ─────────────────────────────────
+    # 👑 Sincronizar miembros del grupo
+    # ─────────────────────────────────
+     async def cmd_sync_members(self, update, context):
+        MI_ID = 5770265726
+
+        # 🔒 Seguridad total
+        if update.effective_user.id != MI_ID:
+            return await update.message.reply_text(
+                "❌ No tienes permiso para usar este comando."
+            )
+
+        chat = update.effective_chat
+        if chat.type != "private":
+            return await update.message.reply_text("⚠️ Usa este comando en privado.")
+
+        await update.message.reply_text("🔍 Buscando streamers vinculados…")
+
+        # Leer TODOS los broadcasters (ya que tú eres superadmin)
+        broadcasters = await self.db.all("SELECT * FROM broadcasters WHERE group_id IS NOT NULL")
+
+        if not broadcasters:
+            return await update.message.reply_text("❌ Ningún streamer tiene grupo PREMIUM vinculado.")
+
+        # Procesar cada streamer
+        for b in broadcasters:
+            group_id = b["group_id"]
+
+            await update.message.reply_text(
+                f"🔄 Sincronizando miembros para <b>{b['slug']}</b>…",
+                parse_mode="HTML"
+            )
+
+            # 1. Usuarios actuales en group_members
+            db_members = await self.db.all("""
+                SELECT telegram_id FROM group_members
+                WHERE group_id=%s AND broadcaster_id=%s
+            """, group_id, b["broadcaster_id"])
+
+            db_ids = {row["telegram_id"] for row in db_members}
+
+            # 2. Usuarios que existen para este streamer
+            all_users = await self.db.all("""
+                SELECT telegram_id FROM telegram_users
+                WHERE streamer_id=%s
+            """, b["broadcaster_id"])
+
+            still_inside = set()
+            removed = set()
+
+            for row in all_users:
+                tg_id = row["telegram_id"]
+
+                try:
+                    member = await context.bot.get_chat_member(group_id, tg_id)
+                    if member.status in ("member", "administrator", "creator", "restricted"):
+                        still_inside.add(tg_id)
+                    else:
+                        removed.add(tg_id)
+
+                except Exception:
+                    removed.add(tg_id)
+
+                await asyncio.sleep(0.05)
+
+            # 3. Añadir los que están dentro pero no en DB
+            added_count = 0
+            for tg_id in still_inside:
+                if tg_id not in db_ids:
+                    await self.db.exec("""
+                        INSERT INTO group_members (
+                            group_id, telegram_id, username,
+                            broadcaster_id, streamer_slug, is_subscribed, joined_at
+                        )
+                        VALUES (%s,%s,NULL,%s,%s,TRUE,NOW())
+                        ON CONFLICT DO NOTHING
+                    """, group_id, tg_id, b["broadcaster_id"], b["slug"])
+                    added_count += 1
+
+            # 4. Borrar los que están en DB pero NO dentro del grupo real
+            removed_count = 0
+            for tg_id in db_ids:
+                if tg_id not in still_inside:
+                    await self.db.exec("""
+                        DELETE FROM group_members
+                        WHERE group_id=%s AND telegram_id=%s
+                    """, group_id, tg_id)
+                    removed_count += 1
+
+            await update.message.reply_text(
+                f"🏁 <b>{b['slug']} sincronizado</b>:\n"
+                f"➕ Añadidos: <b>{added_count}</b>\n"
+                f"➖ Eliminados: <b>{removed_count}</b>\n",
+                parse_mode="HTML"
+            )
+
+        await update.message.reply_text("✅ Sincronización completa para todos los streamers.")
