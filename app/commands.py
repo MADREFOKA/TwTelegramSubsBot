@@ -416,10 +416,10 @@ class Commands:
     # ─────────────────────────────────
     # 👑 Sincronizar miembros del grupo
     # ─────────────────────────────────
-     async def cmd_sync_members(self, update, context):
-        MI_ID = 5770265726
+    async def cmd_sync_members(self, update, context):
+        MI_ID = 5770265726  
 
-        # 🔒 Seguridad total
+        # Seguridad total
         if update.effective_user.id != MI_ID:
             return await update.message.reply_text(
                 "❌ No tienes permiso para usar este comando."
@@ -431,11 +431,16 @@ class Commands:
 
         await update.message.reply_text("🔍 Buscando streamers vinculados…")
 
-        # Leer TODOS los broadcasters (ya que tú eres superadmin)
-        broadcasters = await self.db.all("SELECT * FROM broadcasters WHERE group_id IS NOT NULL")
+        # Leer TODOS los broadcasters que tengan grupo premium
+        broadcasters = await self.db.all("""
+            SELECT * FROM broadcasters
+            WHERE group_id IS NOT NULL
+        """)
 
         if not broadcasters:
-            return await update.message.reply_text("❌ Ningún streamer tiene grupo PREMIUM vinculado.")
+            return await update.message.reply_text(
+                "❌ Ningún streamer tiene grupo PREMIUM vinculado."
+            )
 
         # Procesar cada streamer
         for b in broadcasters:
@@ -454,7 +459,7 @@ class Commands:
 
             db_ids = {row["telegram_id"] for row in db_members}
 
-            # 2. Usuarios que existen para este streamer
+            # 2. Usuarios del streamer en telegram_users
             all_users = await self.db.all("""
                 SELECT telegram_id FROM telegram_users
                 WHERE streamer_id=%s
@@ -468,7 +473,9 @@ class Commands:
 
                 try:
                     member = await context.bot.get_chat_member(group_id, tg_id)
-                    if member.status in ("member", "administrator", "creator", "restricted"):
+                    if member.status in (
+                        "member", "administrator", "creator", "restricted"
+                    ):
                         still_inside.add(tg_id)
                     else:
                         removed.add(tg_id)
@@ -489,7 +496,8 @@ class Commands:
                         )
                         VALUES (%s,%s,NULL,%s,%s,TRUE,NOW())
                         ON CONFLICT DO NOTHING
-                    """, group_id, tg_id, b["broadcaster_id"], b["slug"])
+                    """, group_id, tg_id,
+                         b["broadcaster_id"], b["slug"])
                     added_count += 1
 
             # 4. Borrar los que están en DB pero NO dentro del grupo real
@@ -510,3 +518,4 @@ class Commands:
             )
 
         await update.message.reply_text("✅ Sincronización completa para todos los streamers.")
+
