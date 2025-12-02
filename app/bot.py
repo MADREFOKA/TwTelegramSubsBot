@@ -30,7 +30,7 @@ class Config:
         self.TW_API = "https://api.twitch.tv/helix"
         self.TW_AUTH = "https://id.twitch.tv/oauth2/authorize"
         self.TW_TOKEN = "https://id.twitch.tv/oauth2/token"
-
+        self.bot_owner_id = int(os.getenv("BOT_OWNER_ID", 0))        
 
 class TwitchSubBot:
     def __init__(self, db: Database):
