@@ -256,3 +256,95 @@ class Auditor:
             name="weekly_full_audit"
         )
         logging.info("🗓️ Auditoría semanal programada: lunes 07:00 UTC.")
+
+    async def cmd_auditcheck(self, update, context):
+        """
+        /auditcheck
+        - Puede ejecutarse en PRIVADO o en un GRUPO.
+        - Si se ejecuta en un GRUPO, solo admins pueden usarlo.
+        - No expulsa a nadie, solo muestra quién es sub y quién no.
+        """
+        user = update.effective_user
+        chat = update.effective_chat
+        args = context.args if hasattr(context, "args") else []
+
+        # ───────────────────────────────────────────────
+        # Caso 1: Ejecutado en un grupo → requiere admin
+        # ───────────────────────────────────────────────
+        if chat.type in ("group", "supergroup"):
+            member = await context.bot.get_chat_member(chat.id, user.id)
+            if member.status not in ("administrator", "creator"):
+                return await update.message.reply_text("⚠️ Solo los administradores pueden usar /auditcheck en el grupo.")
+
+            # Buscar broadcaster asociado al grupo
+            b = await self.db.one("SELECT * FROM broadcasters WHERE group_id=%s", chat.id)
+            if not b:
+                return await update.message.reply_text("❌ Este grupo no está vinculado a ningún canal.")
+            
+            slug = b["slug"]
+
+        # ───────────────────────────────────────────────
+        # Caso 2: En privado → igual que el streamer dueño
+        # ───────────────────────────────────────────────
+        else:
+            b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+            if not b:
+                return await update.message.reply_text("❌ No tienes ningún canal vinculado.")
+            slug = b["slug"]
+
+        # ───────────────────────────────────────────────
+        # Ejecutar comprobación segura (sin expulsar)
+        # ───────────────────────────────────────────────
+        result_text = await self.check_subs_only(slug)
+        await update.message.reply_text(result_text, disable_web_page_preview=True)
+
+    async def check_subs_only(self, slug):
+        """
+        Comprueba el estado de subs SIN expulsar ni modificar registros.
+        Devuelve un texto con el resultado.
+        """
+        b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
+        broadcaster_id = b["broadcaster_id"]
+        group_id = b["group_id"]
+
+        access_token = await self.refresh_twitch_token(b)
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Client-Id": self.cfg.client_id,
+        }
+
+        members = await self.db.all("""
+            SELECT telegram_id, username, twitch_id, is_subscribed
+            FROM group_members
+            WHERE group_id=%s
+        """, group_id)
+
+        text = f"📋 *Comprobación de subs para '{slug}' (modo seguro)*\n"
+        text += "*(No se expulsará a nadie)*\n\n"
+
+        for m in members:
+            # Saltar admins del grupo
+            try:
+                # Estado real de sub en Twitch
+                resp = requests.get(
+                    "https://api.twitch.tv/helix/subscriptions/user",
+                    headers=headers,
+                    params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
+                    timeout=10
+                )
+
+                # Si Twitch devuelve error → NO expulsamos → lo mostramos
+                if resp.status_code != 200:
+                    text += f"⚠️ @{m['username']} → ERROR {resp.status_code} ({resp.text})\n"
+                    continue
+
+                data = resp.json().get("data", [])
+                still_sub = len(data) > 0
+
+                text += f"• @{m['username']} → {'🟢 SUB' if still_sub else '🔴 NO SUB'}\n"
+
+            except Exception as e:
+                text += f"⚠️ @{m['username']} → Error al consultar Twitch: {str(e)}\n"
+
+        return text
+
