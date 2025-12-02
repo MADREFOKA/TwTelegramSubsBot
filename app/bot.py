@@ -181,6 +181,7 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("priv_list", self.cmds.cmd_priv_list))
         app.add_handler(CallbackQueryHandler(self.cmds.on_callback, pattern="^guide_usage$"))
         app.add_handler(CommandHandler("sync_members", self.cmds.cmd_sync_members))
+        app.add_handler(CommandHandler("auditcheck", self.auditor.cmd_auditcheck))
 
         
         # 🔸 Nuevo: handler de entrada/salida de miembros
