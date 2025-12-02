@@ -74,38 +74,81 @@ class TwitchSubBot:
             logging.error(f"send_tg error: {e}")
 
     async def refresh_twitch_token(self, broadcaster_row: dict) -> str:
-        """Renueva tokens de Twitch si han caducado."""
+        """Renueva tokens de Twitch si han caducado. Con diagnóstico y aviso automático."""
         access_token = self.cipher.decrypt(broadcaster_row["access_token"])
         refresh_token = self.cipher.decrypt(broadcaster_row.get("refresh_token"))
         obtained = broadcaster_row["token_obtained_at"]
         expires = broadcaster_row["token_expires_in"]
-
+        broadcaster_id = broadcaster_row["broadcaster_id"]
+        owner_tg_id = broadcaster_row["owner_telegram_id"]
+    
+        # Si falta refresh_token → no se puede renovar nunca
         if not refresh_token:
+            logging.warning(f"⚠️ Broadcaster {broadcaster_id} sin refresh_token. Usando access_token actual.")
             return access_token
+    
+        # Si aún no ha caducado → devolver
         if time.time() - obtained < max(0, expires - 86400):
             return access_token
-
+    
+        logging.info(f"🔄 Renovando token de Twitch para broadcaster_id={broadcaster_id}...")
+    
         try:
-            data = requests.post(self.cfg.TW_TOKEN, data={
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": self.cfg.client_id,
-                "client_secret": self.cfg.client_secret
-            }, timeout=15).json()
-
-            if "access_token" in data:
-                access_token = data["access_token"]
-                refresh_token = data.get("refresh_token", refresh_token)
-                enc_access = self.cipher.encrypt(access_token)
-                enc_refresh = self.cipher.encrypt(refresh_token)
-                await self.db.exec("""
-                    UPDATE broadcasters
-                    SET access_token=%s, refresh_token=%s, token_obtained_at=%s, token_expires_in=%s
-                    WHERE broadcaster_id=%s
-                """, enc_access, enc_refresh, int(time.time()), data.get("expires_in", expires),
-                   broadcaster_row["broadcaster_id"])
+            data = requests.post(
+                self.cfg.TW_TOKEN,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": self.cfg.client_id,
+                    "client_secret": self.cfg.client_secret
+                },
+                timeout=15
+            ).json()
+    
+            # ❗ Diagnóstico: error explícito
+            if "access_token" not in data:
+                error_msg = data.get("message") or data.get("error") or "Error desconocido"
+                logging.error(f"❌ ERROR al refrescar el token de Twitch: {data}")
+    
+                # Enviar aviso al streamer SOLO una vez cada 24 horas
+                await self.send_tg(
+                    owner_tg_id,
+                    f"⚠️ *Error renovando permisos de Twitch*\n\n"
+                    f"Tu token ha caducado o fue revocado.\n"
+                    f"Motivo: `{error_msg}`\n\n"
+                    "Por favor ejecuta /setup de nuevo para reactivar el bot.",
+                    md=True
+                )
+    
+                return access_token  # devolvemos el token viejo para no romper el flujo
+    
+            # ✔ Token renovado correctamente
+            access_token = data["access_token"]
+            new_refresh_token = data.get("refresh_token", refresh_token)
+    
+            enc_access = self.cipher.encrypt(access_token)
+            enc_refresh = self.cipher.encrypt(new_refresh_token)
+    
+            await self.db.exec("""
+                UPDATE broadcasters
+                SET access_token=%s,
+                    refresh_token=%s,
+                    token_obtained_at=%s,
+                    token_expires_in=%s
+                WHERE broadcaster_id=%s
+            """, enc_access, enc_refresh, int(time.time()), data.get("expires_in", expires), broadcaster_id)
+    
+            logging.info(f"✅ Token renovado correctamente para broadcaster_id={broadcaster_id}")
+    
         except Exception as e:
-            logging.warning(f"Error al refrescar token: {e}")
+            logging.exception(f"❌ EXCEPCIÓN renovando token de Twitch: {e}")
+    
+            await self.send_tg(
+                owner_tg_id,
+                "⚠️ *Fallo al contactar con Twitch para renovar el token*\n"
+                "Por favor ejecuta /setup de nuevo para reactivar los permisos.",
+                md=True
+            )
         return access_token
 
     def days_until(self, iso_ts: str):
