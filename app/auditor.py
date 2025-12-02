@@ -81,8 +81,13 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                     params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
                     timeout=10
                 )
-                data = resp.json().get("data", [])
-                still_sub = len(data) > 0
+                if resp.status_code != 200:
+                    logging.warning(f"⚠️ Twitch ERROR {resp.status_code}: {resp.text}")    
+                    # NO expulsar ni marcar como no sub, mantener estado previo
+                    still_sub = m["is_subscribed"]
+                else:
+                    data = resp.json().get("data", [])
+                    still_sub = len(data) > 0
 
                 # Actualizar flags de sub en ambas tablas
                 await db.exec("""
