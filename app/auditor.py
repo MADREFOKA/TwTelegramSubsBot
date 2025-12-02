@@ -284,7 +284,7 @@ class Auditor:
                 return await update.message.reply_text("❌ No estás autorizado a usar /auditcheck.")
             slug = b["slug"]
 
-        result_text = await self.check_subs_only(sllag)
+        result_text = await self.check_subs_only(slug)
         await self.send_long_message(context.bot, chat.id, result_text)
 
 
