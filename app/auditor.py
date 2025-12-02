@@ -37,7 +37,7 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
 
         # Miembros actuales (según group_members)
         members = await db.all("""
-            SELECT telegram_id, username, twitch_id, is_subscribed
+            SELECT telegram_id, username, twitch_id, twitch_login, is_subscribed
             FROM group_members
             WHERE group_id=%s
         """, group_id)
@@ -73,6 +73,17 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
             if tg_id in admin_ids or tg_id in privileged_ids:
                 continue
 
+            # ❗ FIX: evitar auditorías rotas si NO hay twitch_id
+            if not m["twitch_id"]:
+                fallos += 1
+                await db.exec("""
+                    INSERT INTO audit_details
+                    (audit_id, telegram_id, username, twitch_login, twitch_id, accion, motivo)
+                    VALUES (%s,%s,%s,%s,%s,'fallo','twitch_id vacío en group_members')
+                """, audit_id, tg_id, m["username"], m.get("twitch_login"), None)
+                logging.warning(f"⚠️ Usuario {m['username']} sin twitch_id. Saltado.")
+                continue
+
             try:
                 # Consultar estado de sub en Twitch
                 resp = requests.get(
@@ -81,20 +92,21 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                     params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
                     timeout=10
                 )
+
+                # ❗ FIX: si Twitch devuelve error → NO expulsar
                 if resp.status_code != 200:
-                    logging.warning(f"⚠️ Twitch ERROR {resp.status_code}: {resp.text}")    
-                    # NO expulsar ni marcar como no sub, mantener estado previo
+                    logging.warning(f"⚠️ Twitch ERROR {resp.status_code}: {resp.text}")
                     still_sub = m["is_subscribed"]
                 else:
                     data = resp.json().get("data", [])
                     still_sub = len(data) > 0
 
-                # Actualizar flags de sub en ambas tablas
+                # ❗ FIX: GROUP MEMBERS update usando group_id (antes estaba mal)
                 await db.exec("""
                     UPDATE group_members
                     SET is_subscribed=%s
-                    WHERE telegram_id=%s AND broadcaster_id=%s
-                """, still_sub, tg_id, broadcaster_id)
+                    WHERE telegram_id=%s AND group_id=%s
+                """, still_sub, tg_id, group_id)
 
                 await db.exec("""
                     UPDATE telegram_users
@@ -102,76 +114,78 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                     WHERE telegram_id=%s AND streamer_id=%s
                 """, still_sub, tg_id, broadcaster_id)
 
-                if not still_sub:
-                    # Registrar detalle
-                    motivo = "ya no es sub"
+                # Si sigue siendo sub, pasamos
+                if still_sub:
+                    continue
+
+                # Registrar detalle expulsado
+                motivo = "ya no es sub"
+                await db.exec("""
+                    INSERT INTO audit_details
+                    (audit_id, telegram_id, username, twitch_login, twitch_id, accion, motivo)
+                    VALUES (%s,%s,%s,%s,%s,'expulsado',%s)
+                """, audit_id, tg_id, m["username"], m.get("twitch_login"), m["twitch_id"], motivo)
+
+                # Ban real
+                try:
+                    await bot.ban_chat_member(group_id, tg_id)
+                    logging.info(f"👢 Baneado {m['username']} ({tg_id}) de {group_id}")
+                except Exception as e:
+                    fallos += 1
                     await db.exec("""
                         INSERT INTO audit_details
-                        (audit_id, telegram_id, username, twitch_id, accion, motivo)
-                        VALUES (%s,%s,%s,%s,'expulsado',%s)
-                    """, audit_id, tg_id, m["username"], m["twitch_id"], motivo)
+                        (audit_id, telegram_id, username, twitch_login, twitch_id, accion, motivo)
+                        VALUES (%s,%s,%s,%s,%s,'fallo',%s)
+                    """, audit_id, tg_id, m["username"], m.get("twitch_login"), m["twitch_id"], f"Error al banear: {e}")
+                    logging.warning(f"⚠️ Error al banear {m['username']}: {e}")
+                    continue
 
-                    # Ban real en Telegram
-                    try:
-                        await bot.ban_chat_member(group_id, tg_id)
-                        logging.info(f"👢 Baneado {m['username']} ({tg_id}) de {group_id}")
-                    except Exception as e:
-                        fallos += 1
-                        await db.exec("""
-                            INSERT INTO audit_details
-                            (audit_id, telegram_id, username, twitch_id, accion, motivo)
-                            VALUES (%s,%s,%s,%s,'fallo',%s)
-                        """, audit_id, tg_id, m["username"], m["twitch_id"], f"Error al banear: {e}")
-                        logging.warning(f"⚠️ Error al banear {m['username']}: {e}")
-                        continue  # pasamos al siguiente
-
-                    # Marcar is_banned en telegram_users para ese streamer
-                    try:
-                        await db.exec("""
-                            UPDATE telegram_users
-                            SET is_banned = TRUE
-                            WHERE telegram_id=%s AND streamer_id=%s
-                        """, tg_id, broadcaster_id)
-                    except Exception as e:
-                        logging.warning(f"⚠️ No se pudo marcar is_banned en telegram_users ({tg_id}): {e}")
-
-                    # Eliminar de group_members (ya no está en el grupo)
+                # Marcar is_banned
+                try:
                     await db.exec("""
-                        DELETE FROM group_members
-                        WHERE group_id=%s AND telegram_id=%s AND broadcaster_id=%s
-                    """, group_id, tg_id, broadcaster_id)
+                        UPDATE telegram_users
+                        SET is_banned = TRUE
+                        WHERE telegram_id=%s AND streamer_id=%s
+                    """, tg_id, broadcaster_id)
+                except Exception as e:
+                    logging.warning(f"⚠️ No se pudo marcar is_banned: {e}")
 
-                    expulsados += 1
-                    expulsados_total += 1
+                # Eliminar de group_members
+                await db.exec("""
+                    DELETE FROM group_members
+                    WHERE group_id=%s AND telegram_id=%s AND broadcaster_id=%s
+                """, group_id, tg_id, broadcaster_id)
 
-                    # Anti rate-limit
-                    await asyncio.sleep(0.2)
-                    if expulsados_total % 50 == 0:
-                        logging.info("⏸️ Pausa de seguridad: 50 expulsiones procesadas, esperando 15s…")
-                        await asyncio.sleep(15)
+                expulsados += 1
+                expulsados_total += 1
+
+                await asyncio.sleep(0.2)
+                if expulsados_total % 50 == 0:
+                    logging.info("⏸️ Pausa: 50 expulsiones → 15s espera")
+                    await asyncio.sleep(15)
 
             except Exception as e:
                 fallos += 1
                 await db.exec("""
-                    INSERT INTO audit_details (audit_id, telegram_id, username, twitch_id, accion, motivo)
-                    VALUES (%s,%s,%s,%s,'fallo',%s)
-                """, audit_id, tg_id, m["username"], m["twitch_id"], str(e))
+                    INSERT INTO audit_details
+                    (audit_id, telegram_id, username, twitch_login, twitch_id, accion, motivo)
+                    VALUES (%s,%s,%s,%s,%s,'fallo',%s)
+                """, audit_id, tg_id, m["username"], m.get("twitch_login"), m.get("twitch_id"), str(e))
                 logging.warning(f"⚠️ Error verificando {m['username']}: {e}")
 
-        # Actualizar totales
+        # Finalizar totales
         await db.exec("""
             UPDATE audit_logs
             SET total_miembros=%s, expulsados=%s, fallos=%s, fecha_auditoria=NOW()
             WHERE id=%s
         """, total, expulsados, fallos, audit_id)
 
-        logging.info(f"✅ Auditoría completada para {slug}: expulsados={expulsados}, fallos={fallos}")
+        logging.info(f"✅ Auditoría completada para {slug}")
 
     except Exception as e:
         logging.exception(f"❌ Error en run_full_audit({slug}): {e}")
 
     finally:
-        # Seguridad: evitar NULLs en audit_logs
         if audit_id is not None:
             try:
                 await db.exec("""
@@ -182,9 +196,8 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                         fecha_auditoria = COALESCE(fecha_auditoria, NOW())
                     WHERE id=%s
                 """, total or 0, expulsados or 0, fallos or 0, audit_id)
-                logging.info(f"🧾 Auditoría {audit_id} normalizada correctamente (NULLs reemplazados).")
             except Exception as e:
-                logging.warning(f"⚠️ No se pudo completar la normalización de la auditoría {audit_id}: {e}")
+                logging.warning(f"⚠️ No se pudo normalizar auditoría {audit_id}")
 
 
 class Auditor:
@@ -194,12 +207,14 @@ class Auditor:
         self.send_tg = send_tg
         self.refresh_twitch_token = refresh_twitch_token
 
+    # 📌 Enviar mensajes largos SIN romper Telegram
+    async def send_long_message(self, bot, chat_id, text, disable_web_page_preview=True):
+        MAX_LEN = 4000
+        parts = [text[i:i+MAX_LEN] for i in range(0, len(text), MAX_LEN)]
+        for part in parts:
+            await bot.send_message(chat_id, part, disable_web_page_preview=disable_web_page_preview)
+
     async def cmd_auditnow(self, update, context):
-        """
-        /auditnow
-        - Si lo usa el owner de un canal SIN argumentos → audita su propio canal (como antes).
-        - Si lo usa el BOT_OWNER_ID con argumento slug → audita el canal indicado.
-        """
         user = update.effective_user
         chat = update.effective_chat
         args = context.args if hasattr(context, "args") else []
@@ -211,23 +226,21 @@ class Auditor:
         slug = None
         b = None
 
-        # BOT_OWNER_ID puede auditar un slug concreto
+        # BOT_OWNER puede auditar cualquier slug
         if args and getattr(self.cfg, "bot_owner_id", None) and user.id == self.cfg.bot_owner_id:
             slug_arg = args[0].lower()
             b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug_arg)
             if not b:
-                return await update.message.reply_text(f"❌ No se encontró ningún broadcaster con slug '{slug_arg}'.")
+                return await update.message.reply_text(f"❌ No se encontró broadcaster '{slug_arg}'.")
             slug = b["slug"]
         else:
-            # Comportamiento antiguo: owner_telegram_id = usuario
+            # Owner original del canal
             b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
             if not b:
-                return await update.message.reply_text(
-                    "❌ No tienes ningún canal vinculado o no estás autorizado para usar /auditnow."
-                )
+                return await update.message.reply_text("❌ No tienes canal vinculado.")
             slug = b["slug"]
 
-        await update.message.reply_text(f"⏳ Iniciando auditoría para '{slug}'. Esto puede tardar un poco...")
+        await update.message.reply_text(f"⏳ Iniciando auditoría para '{slug}'...")
 
         await run_full_audit(context.bot, self.db, self.cfg, slug, self.refresh_twitch_token)
 
@@ -237,72 +250,36 @@ class Auditor:
                 url=f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}"
             )
         ]])
-        await update.message.reply_text("✅ Auditoría completada. Revisa tu Dashboard.", reply_markup=keyboard)
 
-    def schedule_weekly_audit(self, job_queue):
-        """Programa la auditoría automática los lunes a las 07:00 UTC."""
-        async def _weekly_task(context):
-            rows = await self.db.all("SELECT slug FROM broadcasters")
-            for r in rows:
-                try:
-                    await run_full_audit(context.bot, self.db, self.cfg, r["slug"], self.refresh_twitch_token)
-                except Exception as e:
-                    logging.error(f"Error auditoría semanal {r['slug']}: {e}")
-
-        job_queue.run_daily(
-            _weekly_task,
-            time=dtime(hour=7, minute=0),
-            days=(0,),  # lunes
-            name="weekly_full_audit"
-        )
-        logging.info("🗓️ Auditoría semanal programada: lunes 07:00 UTC.")
+        await update.message.reply_text("✅ Auditoría completada.", reply_markup=keyboard)
 
     async def cmd_auditcheck(self, update, context):
-        """
-        /auditcheck
-        - Puede ejecutarse en PRIVADO o en un GRUPO.
-        - Si se ejecuta en un GRUPO, solo admins pueden usarlo.
-        - No expulsa a nadie, solo muestra quién es sub y quién no.
-        """
         user = update.effective_user
         chat = update.effective_chat
-        args = context.args if hasattr(context, "args") else []
 
-        # ───────────────────────────────────────────────
-        # Caso 1: Ejecutado en un grupo → requiere admin
-        # ───────────────────────────────────────────────
+        # Si se ejecuta en grupo → solo admins
         if chat.type in ("group", "supergroup"):
             member = await context.bot.get_chat_member(chat.id, user.id)
             if member.status not in ("administrator", "creator"):
-                return await update.message.reply_text("⚠️ Solo los administradores pueden usar /auditcheck en el grupo.")
+                return await update.message.reply_text("⚠️ Solo administradores pueden usar /auditcheck.")
 
-            # Buscar broadcaster asociado al grupo
             b = await self.db.one("SELECT * FROM broadcasters WHERE group_id=%s", chat.id)
             if not b:
                 return await update.message.reply_text("❌ Este grupo no está vinculado a ningún canal.")
-            
+
             slug = b["slug"]
 
-        # ───────────────────────────────────────────────
-        # Caso 2: En privado → igual que el streamer dueño
-        # ───────────────────────────────────────────────
         else:
+            # En privado → propietario del canal
             b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
             if not b:
-                return await update.message.reply_text("❌ No tienes ningún canal vinculado.")
+                return await update.message.reply_text("❌ No tienes canal vinculado.")
             slug = b["slug"]
 
-        # ───────────────────────────────────────────────
-        # Ejecutar comprobación segura (sin expulsar)
-        # ───────────────────────────────────────────────
         result_text = await self.check_subs_only(slug)
-        await update.message.reply_text(result_text, disable_web_page_preview=True)
+        await self.send_long_message(context.bot, chat.id, result_text)
 
     async def check_subs_only(self, slug):
-        """
-        Comprueba el estado de subs SIN expulsar ni modificar registros.
-        Devuelve un texto con el resultado.
-        """
         b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
         broadcaster_id = b["broadcaster_id"]
         group_id = b["group_id"]
@@ -314,18 +291,15 @@ class Auditor:
         }
 
         members = await self.db.all("""
-            SELECT telegram_id, username, twitch_id, is_subscribed
+            SELECT telegram_id, username, twitch_id, twitch_login, is_subscribed
             FROM group_members
             WHERE group_id=%s
         """, group_id)
 
-        text = f"📋 *Comprobación de subs para '{slug}' (modo seguro)*\n"
-        text += "*(No se expulsará a nadie)*\n\n"
+        text = f"📋 *Comprobación de subs para '{slug}' (modo seguro)*\n\n"
 
         for m in members:
-            # Saltar admins del grupo
             try:
-                # Estado real de sub en Twitch
                 resp = requests.get(
                     "https://api.twitch.tv/helix/subscriptions/user",
                     headers=headers,
@@ -333,9 +307,8 @@ class Auditor:
                     timeout=10
                 )
 
-                # Si Twitch devuelve error → NO expulsamos → lo mostramos
                 if resp.status_code != 200:
-                    text += f"⚠️ @{m['username']} → ERROR {resp.status_code} ({resp.text})\n"
+                    text += f"⚠️ @{m['username']} → ERROR {resp.status_code}\n"
                     continue
 
                 data = resp.json().get("data", [])
@@ -344,7 +317,6 @@ class Auditor:
                 text += f"• @{m['username']} → {'🟢 SUB' if still_sub else '🔴 NO SUB'}\n"
 
             except Exception as e:
-                text += f"⚠️ @{m['username']} → Error al consultar Twitch: {str(e)}\n"
+                text += f"⚠️ @{m['username']} → Error Twitch: {str(e)}\n"
 
         return text
-
