@@ -74,7 +74,13 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
         admin_ids = {a.user.id for a in admins}
 
         # privileged users = NO expulsables (pero NO tienen permisos de comandos)
-        privileged_ids = set(await db.get_privileged_ids(slug))
+        raw_privileged = await db.get_privileged_ids(slug)
+        privileged_ids = set()
+        for x in raw_privileged or []:
+            try:
+                privileged_ids.add(int(x))
+            except Exception:
+                pass
 
         total = len(members)
 
@@ -128,7 +134,7 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
         expulsados_total = 0
 
         for m in members:
-            tg_id = m["telegram_id"]
+            tg_id = int(m["telegram_id"])
 
             # NO expulsar admins o privileged_users
             if tg_id in admin_ids or tg_id in privileged_ids:
