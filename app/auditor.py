@@ -305,6 +305,7 @@ class Auditor:
         """, group_id)
 
         text = f"📋 *Comprobación de subs para '{slug}' (modo seguro)*\n\n"
+        did_refresh = False
 
         for m in members:
             try:
@@ -313,24 +314,34 @@ class Auditor:
                     text += f"⚠️ @{m.get('username') or m['telegram_id']} → SIN TWITCH_ID\n"
                     continue
         
-                def _do_req(hdrs):
-                    return requests.get(
+                resp = requests.get(
+                    "https://api.twitch.tv/helix/subscriptions/user",
+                    headers=headers,
+                    params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
+                    timeout=10
+                )
+        
+                # 🔥 Si Twitch responde 401, refrescar SOLO UNA VEZ en toda la ejecución
+                if resp.status_code == 401 and not did_refresh:
+                    did_refresh = True
+        
+                    access_token = await self.refresh_twitch_token(b)
+                    headers["Authorization"] = f"Bearer {access_token}"
+        
+                    resp = requests.get(
                         "https://api.twitch.tv/helix/subscriptions/user",
-                        headers=hdrs,
+                        headers=headers,
                         params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
                         timeout=10
                     )
         
-                resp = _do_req(headers)
-        
-                # 🔥 Si 401, refresca token y reintenta 1 vez
-                if resp.status_code == 401:
-                    access_token = await self.refresh_twitch_token(b)
-                    headers = {
-                        "Authorization": f"Bearer {access_token}",
-                        "Client-Id": self.cfg.client_id,
-                    }
-                    resp = _do_req(headers)
+                # Si sigue fallando tras el refresh → cortar (token revocado o sin scope)
+                if resp.status_code == 401 and did_refresh:
+                    return (
+                        "❌ Twitch devuelve 401 incluso tras refrescar el token.\n"
+                        "El token está revocado o sin permisos.\n"
+                        "➡️ El streamer debe ejecutar /setup de nuevo."
+                    )
         
                 if resp.status_code != 200:
                     text += f"⚠️ @{m.get('username') or m['telegram_id']} → ERROR {resp.status_code}\n"
