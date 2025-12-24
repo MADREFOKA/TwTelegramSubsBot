@@ -97,7 +97,7 @@ class TwitchSubBot:
             return access_token
     
         # Si aún no ha caducado → devolver
-        if time.time() - obtained < max(0, expires - 86400):
+        if time.time() - obtained < max(0, expires - 60):
             return access_token
     
         logging.info(f"🔄 Renovando token de Twitch para broadcaster_id={broadcaster_id}...")
