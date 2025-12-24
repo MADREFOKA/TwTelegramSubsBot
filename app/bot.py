@@ -77,10 +77,19 @@ class TwitchSubBot:
         """Renueva tokens de Twitch si han caducado. Con diagnóstico y aviso automático."""
         access_token = self.cipher.decrypt(broadcaster_row["access_token"])
         refresh_token = self.cipher.decrypt(broadcaster_row.get("refresh_token"))
-        obtained = broadcaster_row["token_obtained_at"]
-        expires = broadcaster_row["token_expires_in"]
         broadcaster_id = broadcaster_row["broadcaster_id"]
         owner_tg_id = broadcaster_row["owner_telegram_id"]
+    
+        obtained = broadcaster_row.get("token_obtained_at") or 0
+        expires = broadcaster_row.get("token_expires_in") or 0
+    
+        # 🔥 FIX: obtained en el futuro => no refresca nunca => 401 masivo
+        if obtained > time.time():
+            logging.warning(
+                f"⚠️ token_obtained_at en el futuro para broadcaster_id={broadcaster_id} "
+                f"(obtained={obtained}, now={int(time.time())}). Forzando refresh."
+            )
+            obtained = 0
     
         # Si falta refresh_token → no se puede renovar nunca
         if not refresh_token:
