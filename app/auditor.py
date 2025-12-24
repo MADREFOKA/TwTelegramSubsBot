@@ -8,6 +8,42 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from app.db import Database
 
 # =====================================================================
+#                    HELPER: LISTA COMPLETA DE SUBS
+# =====================================================================
+
+def fetch_all_subs(broadcaster_id, headers):
+    """
+    Devuelve (subs_set, err)
+      - subs_set: set(str(user_id)) si OK
+      - err: (status_code, resp_text) si falla
+    """
+    url = "https://api.twitch.tv/helix/subscriptions"
+    subs = set()
+    cursor = None
+
+    while True:
+        params = {"broadcaster_id": broadcaster_id, "first": 100}
+        if cursor:
+            params["after"] = cursor
+
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+
+        if resp.status_code != 200:
+            return None, (resp.status_code, resp.text)
+
+        payload = resp.json()
+        for s in payload.get("data", []):
+            # Helix devuelve user_id del sub
+            subs.add(str(s["user_id"]))
+
+        cursor = payload.get("pagination", {}).get("cursor")
+        if not cursor:
+            break
+
+    return subs, None
+
+
+# =====================================================================
 #                           AUDITORÍA COMPLETA
 # =====================================================================
 
@@ -50,12 +86,44 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
         """, broadcaster_id, group_id, slug)
         audit_id = row["id"]
 
-        # Token Twitch
+        # ===============================================================
+        # Token Twitch + OBTENER LISTA COMPLETA DE SUBS (modo seguro)
+        # Si hay cualquier error -> NO expulsar a nadie (abort audit)
+        # ===============================================================
         access_token = await refresh_twitch_token(b)
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Client-Id": cfg.client_id,
         }
+
+        subs_set, err = fetch_all_subs(broadcaster_id, headers)
+
+        # Si Twitch responde 401, refrescar SOLO UNA VEZ y reintentar
+        if err and err[0] == 401:
+            access_token = await refresh_twitch_token(b)
+            headers["Authorization"] = f"Bearer {access_token}"
+            subs_set, err = fetch_all_subs(broadcaster_id, headers)
+
+        # Si SIGUE habiendo error -> auditoría inválida: no expulsar a nadie
+        if err:
+            fallos += 1
+            status, body = err
+
+            logging.warning(f"⛔ Auditoría abortada: Twitch ERROR {status} al obtener subs: {body[:300]}")
+
+            await db.exec("""
+                INSERT INTO audit_details
+                (audit_id, telegram_id, username, twitch_login, twitch_id, accion, motivo)
+                VALUES (%s,NULL,NULL,NULL,NULL,'fallo',%s)
+            """, audit_id, f"Auditoría cancelada (modo seguro): no se pudo obtener lista de subs. Twitch {status}: {body[:300]}")
+
+            await db.exec("""
+                UPDATE audit_logs
+                SET total_miembros=%s, expulsados=%s, fallos=%s, fecha_auditoria=NOW()
+                WHERE id=%s
+            """, total, 0, fallos, audit_id)
+
+            return
 
         expulsados_total = 0
 
@@ -77,20 +145,8 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                 continue
 
             try:
-                # Comprobar estado de sub en Twitch
-                resp = requests.get(
-                    "https://api.twitch.tv/helix/subscriptions/user",
-                    headers=headers,
-                    params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
-                    timeout=10
-                )
-
-                if resp.status_code != 200:
-                    logging.warning(f"⚠️ Twitch ERROR {resp.status_code}: {resp.text}")
-                    still_sub = m["is_subscribed"]
-                else:
-                    data = resp.json().get("data", [])
-                    still_sub = len(data) > 0
+                # ✅ Decisión LOCAL (auditoría válida porque subs_set existe)
+                still_sub = str(m["twitch_id"]) in subs_set
 
                 # Actualizar is_subscribed (no depende de broadcaster_id)
                 await db.exec("""
@@ -304,55 +360,44 @@ class Auditor:
             WHERE group_id=%s
         """, group_id)
 
-        text = f"📋 *Comprobación de subs para '{slug}' (modo seguro)*\n\n"
-        did_refresh = False
+        text = f"📋 *Comprobación de subs para '{slug}' (lista completa, modo seguro)*\n\n"
+
+        # Obtener lista completa de subs (1 refresh si 401)
+        subs_set, err = fetch_all_subs(broadcaster_id, headers)
+
+        if err and err[0] == 401:
+            access_token = await self.refresh_twitch_token(b)
+            headers["Authorization"] = f"Bearer {access_token}"
+            subs_set, err = fetch_all_subs(broadcaster_id, headers)
+
+        # Si falla -> NO tocar nada, solo informar
+        if err:
+            status, body = err
+            text += "⚠️ *No se pudo obtener la lista de suscriptores de Twitch.*\n"
+            text += f"Motivo: `HTTP {status}`\n"
+            text += "➡️ Resultado: *no se ha tomado ninguna acción* (modo seguro).\n"
+            return text
+
+        ok = no = sin = 0
 
         for m in members:
             try:
                 # Si no tiene twitch_id, no se puede comprobar
                 if not m.get("twitch_id"):
+                    sin += 1
                     text += f"⚠️ @{m.get('username') or m['telegram_id']} → SIN TWITCH_ID\n"
                     continue
-        
-                resp = requests.get(
-                    "https://api.twitch.tv/helix/subscriptions/user",
-                    headers=headers,
-                    params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
-                    timeout=10
-                )
-        
-                # 🔥 Si Twitch responde 401, refrescar SOLO UNA VEZ en toda la ejecución
-                if resp.status_code == 401 and not did_refresh:
-                    did_refresh = True
-        
-                    access_token = await self.refresh_twitch_token(b)
-                    headers["Authorization"] = f"Bearer {access_token}"
-        
-                    resp = requests.get(
-                        "https://api.twitch.tv/helix/subscriptions/user",
-                        headers=headers,
-                        params={"broadcaster_id": broadcaster_id, "user_id": m["twitch_id"]},
-                        timeout=10
-                    )
-        
-                # Si sigue fallando tras el refresh → cortar (token revocado o sin scope)
-                if resp.status_code == 401 and did_refresh:
-                    return (
-                        "❌ Twitch devuelve 401 incluso tras refrescar el token.\n"
-                        "El token está revocado o sin permisos.\n"
-                        "➡️ El streamer debe ejecutar /setup de nuevo."
-                    )
-        
-                if resp.status_code != 200:
-                    text += f"⚠️ @{m.get('username') or m['telegram_id']} → ERROR {resp.status_code}\n"
-                    continue
-        
-                data = resp.json().get("data", [])
-                still_sub = len(data) > 0
-        
+
+                still_sub = str(m["twitch_id"]) in subs_set
+                if still_sub:
+                    ok += 1
+                else:
+                    no += 1
+
                 text += f"• @{m.get('username') or m['telegram_id']} → {'🟢 SUB' if still_sub else '🔴 NO SUB'}\n"
-        
+
             except Exception as e:
-                text += f"⚠️ @{m.get('username') or m['telegram_id']} → Error Twitch: {str(e)}\n"
-        
+                text += f"⚠️ @{m.get('username') or m['telegram_id']} → Error: {str(e)}\n"
+
+        text += f"\nResumen: 🟢 {ok} | 🔴 {no} | ⚠️ {sin}\n"
         return text
