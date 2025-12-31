@@ -2,7 +2,6 @@
 import time
 import logging
 import requests
-import time
 
 from app.auditor import fetch_all_subs
 from aiohttp import web
@@ -119,25 +118,25 @@ class OAuthHandlers:
     # ───────────────────────────────────────────────
     # INVITACIÓN DE UN SOLO USO
     # ───────────────────────────────────────────────
-    def _create_one_time_premium_invite(self, group_id: int, ttl_seconds: int = 600) -> str | None:
-    if not group_id:
-        return None
-    try:
-        url = f"https://api.telegram.org/bot{self.cfg.token}/createChatInviteLink"
-        payload = {
-            "chat_id": group_id,
-            "member_limit": 1,  # 🔥 un solo uso
-            "expire_date": int(time.time()) + ttl_seconds,
-            "name": f"premium-1use-{int(time.time())}",
-        }
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code != 200:
-            logging.warning(f"createChatInviteLink {r.status_code}: {r.text}")
+    def _create_one_time_premium_invite(self, group_id: int, ttl_seconds: int = 600):
+        if not group_id:
             return None
-        return r.json().get("result", {}).get("invite_link")
-    except Exception as e:
-        logging.warning(f"⚠️ Error creando link 1-uso: {e}")
-        return None
+        try:
+            url = f"https://api.telegram.org/bot{self.cfg.token}/createChatInviteLink"
+            payload = {
+                "chat_id": group_id,
+                "member_limit": 1,
+                "expire_date": int(time.time()) + ttl_seconds,
+                "name": f"premium-1use-{int(time.time())}",
+            }
+            r = requests.post(url, json=payload, timeout=10)
+            if r.status_code != 200:
+                logging.warning(f"createChatInviteLink {r.status_code}: {r.text}")
+                return None
+            return r.json().get("result", {}).get("invite_link")
+        except Exception as e:
+            logging.warning(f"⚠️ Error creando link 1-uso: {e}")
+            return None
 
     # ───────────────────────────────────────────────
     # CALLBACK USUARIO / VIEWER
@@ -361,7 +360,7 @@ class OAuthHandlers:
                         await self.db.exec("""
                             UPDATE telegram_users
                             SET is_banned = FALSE
-                            WHERE telegram_id=%s AND streamer_id=%s
+                            WHERE telegram_id=%s AND streamer_id=%sa
                         """, row["telegram_id"], b["broadcaster_id"])
                     except Exception as e:
                         logging.warning(f"⚠️ Error haciendo unban real / limpiando is_banned: {e}")
