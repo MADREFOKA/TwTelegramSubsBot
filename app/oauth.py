@@ -306,32 +306,41 @@ class OAuthHandlers:
             except Exception as e:
                 logging.warning(f"⚠️ No se pudo actualizar telegram_users: {e}")
 
-            # ─────────────────────────────────────
-            # Guardar / actualizar en group_members (solo si hay group_id)
-            # ─────────────────────────────────────
-            if b.get("group_id"):
-                try:
+            # ──────────────────────────────────────────────────────
+            # Guardar / actualizar en telegram_users (por streamer)
+            # ──────────────────────────────────────────────────────
+            try:
+                tu = await self.db.one(
+                    "SELECT * FROM telegram_users WHERE telegram_id=%s AND streamer_id=%s",
+                    row["telegram_id"], b["broadcaster_id"]
+                )
+            
+                if tu:
+                    # Mismo streamer → actualizar
                     await self.db.exec("""
-                        INSERT INTO group_members (
-                            group_id, telegram_id, username, twitch_id,
-                            broadcaster_id, streamer_slug, joined_at, is_subscribed
+                        UPDATE telegram_users
+                        SET linked_twitch_id=%s,
+                            twitch_login=%s,
+                            is_subscribed=%s
+                        WHERE telegram_id=%s AND streamer_id=%s
+                    """, me["id"], me["login"], is_sub,
+                         row["telegram_id"], b["broadcaster_id"])
+                else:
+                    # No existía fila para este streamer → crear
+                    await self.db.exec("""
+                        INSERT INTO telegram_users (
+                            telegram_id, username, first_name, last_name,
+                            linked_twitch_id, twitch_login, is_subscribed, streamer_id
                         )
-                        VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s)
-                        ON CONFLICT (group_id, telegram_id)
-                        DO UPDATE SET
-                            username=EXCLUDED.username,
-                            twitch_id=EXCLUDED.twitch_id,
-                            is_subscribed=EXCLUDED.is_subscribed,
-                            joined_at=NOW();
-                    """,
-                        b["group_id"], row["telegram_id"], me["login"], me["id"],
-                        b["broadcaster_id"], b["slug"], bool(is_sub)
-                    )
-                    logging.info(
-                        f"💾 Guardado en group_members: @{me['login']} ({row['telegram_id']}) - sub={bool(is_sub)}"
-                    )
-                except Exception as e:
-                    logging.warning(f"⚠️ No se pudo guardar en group_members: {e}")
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    """, row["telegram_id"], None, None, None,
+                         me["id"], me["login"], is_sub, b["broadcaster_id"])
+            
+                logging.info(
+                    f"💾 telegram_users actualizado → TG:{row['telegram_id']} TW:{me['login']} Streamer:{b['broadcaster_id']}"
+                )
+            except Exception as e:
+                logging.warning(f"⚠️ No se pudo actualizar telegram_users: {e}")
 
             # ───────────────
             # LÓGICA FINAL
