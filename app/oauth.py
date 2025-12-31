@@ -208,21 +208,24 @@ class OAuthHandlers:
             data_sub = res_json.get("data", [])
             logging.info(f"Twitch API subscriptions response: {res_json}")
 
-            # -------- Mensajes bonitos con utils/messages.py --------
+            premium_link = None
+            if b.get("group_id"):
+                premium_link = self._create_one_time_premium_invite(b["group_id"], ttl_seconds=600)
+            
+            # -------- Mensajes para el usuario --------
             if me["id"] == b["broadcaster_id"]:
-                # El propio streamer → siempre tiene acceso premium
                 is_sub = True
                 msg, keyboard = viewer_is_owner(
                     me["display_name"],
                     b["display_name"],
-                    b.get("invite_link")
+                    premium_link
                 )
             elif data_sub:
                 is_sub = True
                 msg, keyboard = viewer_is_sub(
                     me["display_name"],
                     b["display_name"],
-                    b.get("invite_link")
+                    premium_link
                 )
             else:
                 is_sub = False
