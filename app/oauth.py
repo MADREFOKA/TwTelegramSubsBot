@@ -242,7 +242,11 @@ class OAuthHandlers:
             premium_link = None
             if b.get("group_id"):
                 premium_link = self._create_one_time_premium_invite(b["group_id"], ttl_seconds=600)
-
+            
+                # Fallback: si no se pudo crear 1-uso, usar el link persistente guardado
+                if not premium_link:
+                    premium_link = b.get("invite_link")
+                    
             # -------- Mensajes para el usuario --------
             if me["id"] == b["broadcaster_id"]:
                 is_sub = True
