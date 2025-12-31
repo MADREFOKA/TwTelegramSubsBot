@@ -327,19 +327,29 @@ class Auditor:
             if not b:
                 return await update.message.reply_text("❌ No estás autorizado para usar /auditnow.")
             slug = b["slug"]
-
+            
         await update.message.reply_text(f"⏳ Iniciando auditoría para '{slug}'...")
-
-        await run_full_audit(context.bot, self.db, self.cfg, slug, self.refresh_twitch_token)
-
+        
+        chat_id = chat.id
+        bot = context.bot
+        
+        dashboard_url = f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}"
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "📊 Abrir Dashboard",
-                url=f"{self.cfg.base_url}/dashboard/{slug}?token={b['dashboard_token']}"
-            )
+            InlineKeyboardButton("📊 Abrir Dashboard", url=dashboard_url)
         ]])
+        
+        async def _do_audit():
+            try:
+                await run_full_audit(bot, self.db, self.cfg, slug, self.refresh_twitch_token)
+                await bot.send_message(chat_id, "✅ Auditoría completada.", reply_markup=keyboard)
+            except Exception as e:
+                logging.exception(f"❌ Error en auditoría background ({slug}): {e}")
+                await bot.send_message(chat_id, "❌ Error ejecutando la auditoría. Mira logs / dashboard.")
+        
+        # ✅ IMPORTANTE: no bloquear el comando (evita reintentos del webhook)
+        context.application.create_task(_do_audit())
+        return
 
-        await update.message.reply_text("✅ Auditoría completada.", reply_markup=keyboard)
 
     # =================================================================
     #                           /auditcheck
