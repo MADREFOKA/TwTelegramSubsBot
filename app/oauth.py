@@ -3,9 +3,16 @@ import time
 import logging
 import requests
 
-from app.auditor import fetch_all_subs
 from aiohttp import web
-from app.utils.messages import (setup_success, viewer_is_owner, viewer_is_sub, viewer_not_sub)
+
+from app.auditor import fetch_all_subs
+from app.utils.messages import (
+    setup_success,
+    viewer_is_owner,
+    viewer_is_sub,
+    viewer_not_sub,
+)
+
 
 class OAuthHandlers:
     def __init__(self, cfg, db, send_tg, refresh_twitch_token, days_until, cipher):
@@ -96,7 +103,7 @@ class OAuthHandlers:
             # Mensaje principal con botones inline (Dashboard + Guía)
             msg, keyboard = setup_success(me["display_name"], self.cfg.bot_username, slug, dash_link)
 
-            # 👇 Enviar mensaje sin previsualización del enlace
+            # Enviar mensaje sin previsualización del enlace
             await self.send_tg(
                 row["telegram_id"],
                 msg,
@@ -106,8 +113,10 @@ class OAuthHandlers:
             )
 
             return web.Response(
-                text=f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
-                     "<h3>✅ Vinculación completada. Puedes volver a Telegram.</h3>",
+                text=(
+                    f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
+                    "<h3>✅ Vinculación completada. Puedes volver a Telegram.</h3>"
+                ),
                 content_type="text/html"
             )
 
@@ -116,7 +125,7 @@ class OAuthHandlers:
             return web.Response(text=f"❌ Error interno: {e}", status=500)
 
     # ───────────────────────────────────────────────
-    # INVITACIÓN DE UN SOLO USO
+    # INVITACIÓN PREMIUM DE UN SOLO USO (member_limit=1)
     # ───────────────────────────────────────────────
     def _create_one_time_premium_invite(self, group_id: int, ttl_seconds: int = 600):
         if not group_id:
@@ -125,7 +134,7 @@ class OAuthHandlers:
             url = f"https://api.telegram.org/bot{self.cfg.token}/createChatInviteLink"
             payload = {
                 "chat_id": group_id,
-                "member_limit": 1,
+                "member_limit": 1,  # ✅ 1 solo uso
                 "expire_date": int(time.time()) + ttl_seconds,
                 "name": f"premium-1use-{int(time.time())}",
             }
@@ -189,50 +198,61 @@ class OAuthHandlers:
             if not b:
                 return web.Response(text="Streamer no encontrado.", status=400)
 
-            # Refrescar token del broadcaster si hace falta
+            # Token del broadcaster (para fallback/validaciones)
             b_access = await self.refresh_twitch_token(b)
             headers_b = {
                 "Authorization": f"Bearer {b_access}",
                 "Client-Id": self.cfg.client_id
             }
 
-            # Verificar suscripción en Twitch
-            r = requests.get(
-                f"{self.cfg.TW_API}/subscriptions/user",
-                headers=headers_user,
-                params={"broadcaster_id": b["broadcaster_id"], "user_id": me["id"]},
-                timeout=15
-            )
-            res_json = r.json()
-            data_sub = res_json.get("data", [])
-            logging.info(f"Twitch API subscriptions response: {res_json}")
+            # ───────────────────────────────────────
+            # Verificar suscripción (robusto + fallback)
+            # ───────────────────────────────────────
+            data_sub = []
+            try:
+                r = requests.get(
+                    f"{self.cfg.TW_API}/subscriptions/user",
+                    headers=headers_user,
+                    params={"broadcaster_id": b["broadcaster_id"], "user_id": me["id"]},
+                    timeout=15
+                )
+                if r.status_code == 200:
+                    res_json = r.json()
+                    data_sub = res_json.get("data", [])
+                    logging.info(f"Twitch subscriptions/user OK: {res_json}")
+                else:
+                    logging.warning(f"Twitch subscriptions/user {r.status_code}: {r.text}")
+            except Exception as e:
+                logging.warning(f"Twitch subscriptions/user exception: {e}")
 
+            # Fallback: lista completa del broadcaster (evita falsos NO SUB)
+            if (me["id"] != b["broadcaster_id"]) and not data_sub:
+                subs_set, err = fetch_all_subs(b["broadcaster_id"], headers_b)
+
+                # Si token broadcaster falló, reintenta tras refresh
+                if err and err[0] == 401:
+                    b_access = await self.refresh_twitch_token(b)
+                    headers_b["Authorization"] = f"Bearer {b_access}"
+                    subs_set, err = fetch_all_subs(b["broadcaster_id"], headers_b)
+
+                if (not err) and subs_set and (str(me["id"]) in subs_set):
+                    data_sub = [{"fallback": True}]
+
+            # Link premium 1-uso (solo si hay group_id)
             premium_link = None
             if b.get("group_id"):
                 premium_link = self._create_one_time_premium_invite(b["group_id"], ttl_seconds=600)
-            
+
             # -------- Mensajes para el usuario --------
             if me["id"] == b["broadcaster_id"]:
                 is_sub = True
-                msg, keyboard = viewer_is_owner(
-                    me["display_name"],
-                    b["display_name"],
-                    premium_link
-                )
+                msg, keyboard = viewer_is_owner(me["display_name"], b["display_name"], premium_link)
             elif data_sub:
                 is_sub = True
-                msg, keyboard = viewer_is_sub(
-                    me["display_name"],
-                    b["display_name"],
-                    premium_link
-                )
+                msg, keyboard = viewer_is_sub(me["display_name"], b["display_name"], premium_link)
             else:
                 is_sub = False
-                msg, keyboard = viewer_not_sub(
-                    me["display_name"],
-                    b["display_name"],
-                    b.get("free_invite_link")
-                )
+                msg, keyboard = viewer_not_sub(me["display_name"], b["display_name"], b.get("free_invite_link"))
 
             # ───────────────────────────────────────
             # Guardar / actualizar en telegram_users
@@ -260,9 +280,9 @@ class OAuthHandlers:
                         await self.db.exec("""
                             INSERT INTO telegram_users (
                                 telegram_id, username, first_name, last_name,
-                                linked_twitch_id, twitch_login, is_subscribed, streamer_id, is_banned
+                                linked_twitch_id, twitch_login, is_subscribed, streamer_id
                             )
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,FALSE)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                         """, row["telegram_id"], tu.get("username"), tu.get("first_name"),
                              tu.get("last_name"), me["id"], me["login"], is_sub, b["broadcaster_id"])
                 else:
@@ -270,9 +290,9 @@ class OAuthHandlers:
                     await self.db.exec("""
                         INSERT INTO telegram_users (
                             telegram_id, username, first_name, last_name,
-                            linked_twitch_id, twitch_login, is_subscribed, streamer_id, is_banned
+                            linked_twitch_id, twitch_login, is_subscribed, streamer_id
                         )
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,FALSE)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                     """, row["telegram_id"], None, None, None,
                          me["id"], me["login"], is_sub, b["broadcaster_id"])
 
@@ -282,47 +302,38 @@ class OAuthHandlers:
             except Exception as e:
                 logging.warning(f"⚠️ No se pudo actualizar telegram_users: {e}")
 
-            # Leer el registro concreto para este streamer (para ver is_banned)
-            tu_stream = await self.db.one(
-                "SELECT * FROM telegram_users WHERE telegram_id=%s AND streamer_id=%s",
-                row["telegram_id"], b["broadcaster_id"]
-            )
-            is_banned = bool(tu_stream.get("is_banned")) if tu_stream else False
-
             # ─────────────────────────────────────
-            # Guardar / actualizar en group_members
+            # Guardar / actualizar en group_members (solo si hay group_id)
             # ─────────────────────────────────────
-            try:
-                await self.db.exec("""
-                    INSERT INTO group_members (
-                        group_id, telegram_id, username, twitch_id,
-                        broadcaster_id, streamer_slug, joined_at, is_subscribed
+            if b.get("group_id"):
+                try:
+                    await self.db.exec("""
+                        INSERT INTO group_members (
+                            group_id, telegram_id, username, twitch_id,
+                            broadcaster_id, streamer_slug, joined_at, is_subscribed
+                        )
+                        VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s)
+                        ON CONFLICT (group_id, telegram_id)
+                        DO UPDATE SET
+                            username=EXCLUDED.username,
+                            twitch_id=EXCLUDED.twitch_id,
+                            is_subscribed=EXCLUDED.is_subscribed,
+                            joined_at=NOW();
+                    """,
+                        b["group_id"], row["telegram_id"], me["login"], me["id"],
+                        b["broadcaster_id"], b["slug"], bool(is_sub)
                     )
-                    VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s)
-                    ON CONFLICT (group_id, telegram_id)
-                    DO UPDATE SET
-                        username=EXCLUDED.username,
-                        twitch_id=EXCLUDED.twitch_id,
-                        is_subscribed=EXCLUDED.is_subscribed,
-                        joined_at=NOW();
-                """,
-                    b["group_id"], row["telegram_id"], me["login"], me["id"],
-                    b["broadcaster_id"], b["slug"], bool(is_sub)
-                )
-                logging.info(
-                    f"💾 Guardado en group_members: @{me['login']} ({row['telegram_id']}) - sub={bool(is_sub)}"
-                )
-            except Exception as e:
-                logging.warning(f"⚠️ No se pudo guardar en group_members: {e}")
+                    logging.info(
+                        f"💾 Guardado en group_members: @{me['login']} ({row['telegram_id']}) - sub={bool(is_sub)}"
+                    )
+                except Exception as e:
+                    logging.warning(f"⚠️ No se pudo guardar en group_members: {e}")
 
-            # ─────────────────────────────────────
-            # LÓGICA FINAL DE ACCESO / MENSAJES
-            # ─────────────────────────────────────
-
+            # ───────────────
+            # LÓGICA FINAL
+            # ───────────────
             if not is_sub:
-                # NO SUBSCRITO
                 if b.get("free_invite_link"):
-                    # Tiene grupo gratuito → usamos el mensaje de viewer_not_sub
                     await self.send_tg(
                         row["telegram_id"],
                         msg,
@@ -330,7 +341,6 @@ class OAuthHandlers:
                         reply_markup=keyboard
                     )
                 else:
-                    # No hay grupo gratuito → mensaje claro sin link
                     await self.send_tg(
                         row["telegram_id"],
                         (
@@ -340,32 +350,7 @@ class OAuthHandlers:
                         ),
                         html=False
                     )
-
             else:
-                # SÍ ES SUB → si estaba baneado, hacemos UNBAN real
-                if is_banned and b.get("group_id"):
-                    try:
-                        resp = requests.post(
-                            f"https://api.telegram.org/bot{self.cfg.token}/unbanChatMember",
-                            data={
-                                "chat_id": b["group_id"],
-                                "user_id": row["telegram_id"]
-                            },
-                            timeout=10
-                        )
-                        logging.info(
-                            f"🔓 UnbanChatMember resp: {resp.status_code} {resp.text}"
-                        )
-                        # Limpiar flag lógico
-                        await self.db.exec("""
-                            UPDATE telegram_users
-                            SET is_banned = FALSE
-                            WHERE telegram_id=%s AND streamer_id=%sa
-                        """, row["telegram_id"], b["broadcaster_id"])
-                    except Exception as e:
-                        logging.warning(f"⚠️ Error haciendo unban real / limpiando is_banned: {e}")
-
-                # En cualquier caso de "sub", usamos el mensaje bonito (viewer_is_sub / owner)
                 await self.send_tg(
                     row["telegram_id"],
                     msg,
@@ -373,7 +358,7 @@ class OAuthHandlers:
                     reply_markup=keyboard
                 )
 
-            # Página final (igual que antes)
+            # Página final
             return web.Response(
                 text=(
                     f"<meta http-equiv='refresh' content='0; url=https://t.me/{self.cfg.bot_username}'>"
