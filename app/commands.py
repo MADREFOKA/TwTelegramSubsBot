@@ -96,15 +96,15 @@ class Commands:
         # 🧾 Guardar datos básicos de Telegram en telegram_users incluyendo streamer_id
         try:
             await self.db.exec("""
-                INSERT INTO telegram_users (telegram_id, username, first_name, last_name, streamer_id)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO telegram_users (telegram_id, username, first_name, last_name)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (telegram_id)
                 DO UPDATE SET
                     username = EXCLUDED.username,
                     first_name = EXCLUDED.first_name,
-                    last_name = EXCLUDED.last_name,
-                    streamer_id = EXCLUDED.streamer_id;
-            """, user.id, user.username, user.first_name, user.last_name, b["broadcaster_id"])
+                    last_name = EXCLUDED.last_name;
+            """, user.id, user.username, user.first_name, user.last_name)
+            
             logging.info(
                 f"💾 Datos Telegram actualizados: {user.first_name} {user.last_name} "
                 f"(@{user.username}) streamer_id={b['broadcaster_id']}"
