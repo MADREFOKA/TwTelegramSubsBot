@@ -69,11 +69,11 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
             WHERE group_id=%s
         """, group_id)
 
-        # Admins / privilegiados (solo para NO expulsarlos)
+        # Admins / privilegiados
         admins = await bot.get_chat_administrators(group_id)
         admin_ids = {a.user.id for a in admins}
 
-        # privileged users = NO expulsables (pero NO tienen permisos de comandos)
+        # privileged users = NO expulsables
         raw_privileged = await db.get_privileged_ids(slug)
         privileged_ids = set()
         for x in raw_privileged or []:
@@ -151,9 +151,13 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                     VALUES (%s,%s,%s,%s,%s,'expulsado',%s)
                 """, audit_id, tg_id, m.get("username"), m.get("twitch_login"), None, motivo)
 
-                # Ban real
+                # Expulsión
                 try:
                     await bot.ban_chat_member(group_id, tg_id)
+                    try:
+                        await bot.unban_chat_member(group_id, tg_id)
+                    except Exception:
+                        pass
                 except Exception as e:
                     fallos += 1
                     await db.exec("""
@@ -161,13 +165,13 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                         (audit_id, telegram_id, username, twitch_login, twitch_id, accion, motivo)
                         VALUES (%s,%s,%s,%s,%s,'fallo',%s)
                     """, audit_id, tg_id, m.get("username"), m.get("twitch_login"),
-                       None, f"Error al banear (sin twitch_id): {e}")
+                       None, f"Error al expulsar: {e}")
                     continue
 
-                # Marcar usuario como no sub y baneado (consistencia)
+                # Marcar usuario como no sub
                 await db.exec("""
                     UPDATE telegram_users
-                    SET is_subscribed=FALSE, is_banned=TRUE
+                    SET is_subscribed=FALSE
                     WHERE telegram_id=%s AND streamer_id=%s
                 """, tg_id, broadcaster_id)
 
@@ -187,10 +191,9 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                 continue
 
             try:
-                # ✅ Decisión LOCAL (auditoría válida porque subs_set existe)
                 still_sub = str(m["twitch_id"]) in subs_set
 
-                # Actualizar is_subscribed (no depende de broadcaster_id)
+                # Actualizar is_subscribed 
                 await db.exec("""
                     UPDATE group_members
                     SET is_subscribed=%s
@@ -215,9 +218,13 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                     VALUES (%s,%s,%s,%s,%s,'expulsado',%s)
                 """, audit_id, tg_id, m["username"], m.get("twitch_login"), m["twitch_id"], motivo)
 
-                # Ban real
+                # Expulsión
                 try:
                     await bot.ban_chat_member(group_id, tg_id)
+                    try:
+                        await bot.unban_chat_member(group_id, tg_id)
+                    except Exception:
+                        pass
                 except Exception as e:
                     fallos += 1
                     await db.exec("""
@@ -225,15 +232,8 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
                         (audit_id, telegram_id, username, twitch_login, twitch_id, accion, motivo)
                         VALUES (%s,%s,%s,%s,%s,'fallo',%s)
                     """, audit_id, tg_id, m["username"], m.get("twitch_login"),
-                       m["twitch_id"], f"Error al banear: {e}")
+                       m["twitch_id"], f"Error al expulsar: {e}")
                     continue
-
-                # Marcar is_banned
-                await db.exec("""
-                    UPDATE telegram_users
-                    SET is_banned = TRUE
-                    WHERE telegram_id=%s AND streamer_id=%s
-                """, tg_id, broadcaster_id)
 
                 # Eliminar de group_members
                 await db.exec("""
