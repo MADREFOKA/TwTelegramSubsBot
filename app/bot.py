@@ -235,14 +235,8 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("sync_members", self.cmds.cmd_sync_members))
         app.add_handler(CommandHandler("auditcheck", self.auditor.cmd_auditcheck))
 
-        
         # 🔸 Nuevo: handler de entrada/salida de miembros
         app.add_handler(ChatMemberHandler(self.on_member_update, ChatMemberHandler.CHAT_MEMBER))
-
-        try:
-            self.auditor.schedule_weekly_audit(app.job_queue)
-        except Exception as e:
-            logging.warning(f"No se pudo programar la auditoría semanal: {e}")
 
         # Webhook
         webhook_url = f"{self.cfg.base_url}/webhook"
