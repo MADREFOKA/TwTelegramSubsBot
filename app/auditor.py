@@ -140,14 +140,50 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
             if tg_id in admin_ids or tg_id in privileged_ids:
                 continue
 
-            # Si twitch_id está vacío → registrar fallo y saltar
-            if not m["twitch_id"]:
-                fallos += 1
+            # Si twitch_id falta/NULL/vacío → expulsar también (modo: sin Twitch ID)
+            if not m.get("twitch_id"):
+                motivo = "sin twitch_id (NULL/vacío) en group_members"
+
+                # Registrar expulsado (aunque no haya twitch_id)
                 await db.exec("""
                     INSERT INTO audit_details
                     (audit_id, telegram_id, username, twitch_login, twitch_id, accion, motivo)
-                    VALUES (%s,%s,%s,%s,%s,'fallo','twitch_id vacío en group_members')
-                """, audit_id, tg_id, m["username"], m.get("twitch_login"), None)
+                    VALUES (%s,%s,%s,%s,%s,'expulsado',%s)
+                """, audit_id, tg_id, m.get("username"), m.get("twitch_login"), None, motivo)
+
+                # Ban real
+                try:
+                    await bot.ban_chat_member(group_id, tg_id)
+                except Exception as e:
+                    fallos += 1
+                    await db.exec("""
+                        INSERT INTO audit_details
+                        (audit_id, telegram_id, username, twitch_login, twitch_id, accion, motivo)
+                        VALUES (%s,%s,%s,%s,%s,'fallo',%s)
+                    """, audit_id, tg_id, m.get("username"), m.get("twitch_login"),
+                       None, f"Error al banear (sin twitch_id): {e}")
+                    continue
+
+                # Marcar usuario como no sub y baneado (consistencia)
+                await db.exec("""
+                    UPDATE telegram_users
+                    SET is_subscribed=FALSE, is_banned=TRUE
+                    WHERE telegram_id=%s AND streamer_id=%s
+                """, tg_id, broadcaster_id)
+
+                # Eliminar de group_members
+                await db.exec("""
+                    DELETE FROM group_members
+                    WHERE group_id=%s AND telegram_id=%s AND broadcaster_id=%s
+                """, group_id, tg_id, broadcaster_id)
+
+                expulsados += 1
+                expulsados_total += 1
+
+                await asyncio.sleep(0.2)
+                if expulsados_total % 50 == 0:
+                    await asyncio.sleep(15)
+
                 continue
 
             try:
