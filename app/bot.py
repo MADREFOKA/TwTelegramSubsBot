@@ -245,7 +245,7 @@ class TwitchSubBot:
             params={
                 "url": webhook_url,
                 "secret_token": self.cfg.secret_token,
-                "allowed_updates": ["message", "chat_member"],
+                "allowed_updates": ["message", "chat_member", "callback_query"],
                 "drop_pending_updates": True,
             },
             timeout=10,
