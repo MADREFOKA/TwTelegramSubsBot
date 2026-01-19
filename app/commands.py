@@ -419,290 +419,290 @@ class Commands:
     # ─────────────────────────────────
     
     async def cmd_sync_group(self, update, context):
-    """
-    🔄 SINCRONIZACIÓN COMPLETA DEL GRUPO
-    
-    Compara los miembros REALES del grupo de Telegram con group_members en BD.
-    
-    Proceso:
-    1. Obtiene TODOS los miembros del grupo (usando getChatMember iterativo)
-    2. Compara con group_members
-    3. Añade los que faltan (marcados como NO verificados)
-    4. Genera reporte detallado
-    
-    ⚠️ NO expulsa a nadie, solo añade registros faltantes
-    """
-    
-    user = update.effective_user
-    chat = update.effective_chat
-    
-    # ═══════════════════════════════════════════════════════════
-    # PERMISOS: Solo superadmin
-    # ═══════════════════════════════════════════════════════════
-    
-    if user.id != self.cfg.bot_owner_id:
-        return await update.message.reply_text(
-            "❌ Solo el superadmin puede usar este comando."
-        )
-    
-    # Permitir uso en privado con slug, o en el grupo directamente
-    if chat.type == "private":
-        if not context.args:
+        """
+        🔄 SINCRONIZACIÓN COMPLETA DEL GRUPO
+        
+        Compara los miembros REALES del grupo de Telegram con group_members en BD.
+        
+        Proceso:
+        1. Obtiene TODOS los miembros del grupo (usando getChatMember iterativo)
+        2. Compara con group_members
+        3. Añade los que faltan (marcados como NO verificados)
+        4. Genera reporte detallado
+        
+        ⚠️ NO expulsa a nadie, solo añade registros faltantes
+        """
+        
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        # ═══════════════════════════════════════════════════════════
+        # PERMISOS: Solo superadmin
+        # ═══════════════════════════════════════════════════════════
+        
+        if user.id != self.cfg.bot_owner_id:
             return await update.message.reply_text(
-                "Usa: /sync_group <slug>\n"
-                "O ejecuta el comando dentro del grupo que quieres sincronizar."
+                "❌ Solo el superadmin puede usar este comando."
             )
-        slug = context.args[0].lower()
-        b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
-        if not b:
-            return await update.message.reply_text("❌ Slug no encontrado.")
-        if not b.get("group_id"):
-            return await update.message.reply_text("❌ Este streamer no tiene grupo premium.")
-        group_id = b["group_id"]
-    
-    elif chat.type in ("group", "supergroup"):
-        # Ejecutado dentro del grupo
-        b = await self.db.one("SELECT * FROM broadcasters WHERE group_id=%s", chat.id)
-        if not b:
-            return await update.message.reply_text("❌ Este grupo no está vinculado.")
-        slug = b["slug"]
-        group_id = chat.id
-    
-    else:
-        return await update.message.reply_text("⚠️ Usa este comando en privado o dentro del grupo.")
-    
-    # ═══════════════════════════════════════════════════════════
-    # INICIAR PROCESO
-    # ═══════════════════════════════════════════════════════════
-    
-    msg = await update.message.reply_text(
-        f"🔄 Sincronizando grupo de **{slug}**...\n"
-        f"⏳ Esto puede tardar varios minutos si el grupo es grande.\n\n"
-        f"📊 Fase 1/3: Obteniendo miembros del grupo...",
-        parse_mode="Markdown"
-    )
-    
-    broadcaster_id = b["broadcaster_id"]
-    
-    # ═══════════════════════════════════════════════════════════
-    # FASE 1: Obtener TODOS los miembros del grupo de Telegram
-    # ═══════════════════════════════════════════════════════════
-    
-    telegram_members = {}  # {telegram_id: {username, status}}
-    
-    try:
-        # Primero obtener admins (estos siempre son accesibles)
-        admins = await context.bot.get_chat_administrators(group_id)
-        admin_ids = set()
         
-        for admin in admins:
-            telegram_members[admin.user.id] = {
-                "username": admin.user.username,
-                "first_name": admin.user.first_name,
-                "status": admin.status,
-                "is_admin": True
-            }
-            admin_ids.add(admin.user.id)
+        # Permitir uso en privado con slug, o en el grupo directamente
+        if chat.type == "private":
+            if not context.args:
+                return await update.message.reply_text(
+                    "Usa: /sync_group <slug>\n"
+                    "O ejecuta el comando dentro del grupo que quieres sincronizar."
+                )
+            slug = context.args[0].lower()
+            b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
+            if not b:
+                return await update.message.reply_text("❌ Slug no encontrado.")
+            if not b.get("group_id"):
+                return await update.message.reply_text("❌ Este streamer no tiene grupo premium.")
+            group_id = b["group_id"]
         
-        logging.info(f"✅ {len(admins)} administradores encontrados")
+        elif chat.type in ("group", "supergroup"):
+            # Ejecutado dentro del grupo
+            b = await self.db.one("SELECT * FROM broadcasters WHERE group_id=%s", chat.id)
+            if not b:
+                return await update.message.reply_text("❌ Este grupo no está vinculado.")
+            slug = b["slug"]
+            group_id = chat.id
         
-        # Ahora obtener el conteo total de miembros
-        try:
-            chat_info = await context.bot.get_chat(group_id)
-            total_members = getattr(chat_info, 'member_count', 0)
-            logging.info(f"📊 Total de miembros reportado por Telegram: {total_members}")
-        except Exception as e:
-            total_members = 0
-            logging.warning(f"⚠️ No se pudo obtener member_count: {e}")
+        else:
+            return await update.message.reply_text("⚠️ Usa este comando en privado o dentro del grupo.")
         
-        await msg.edit_text(
+        # ═══════════════════════════════════════════════════════════
+        # INICIAR PROCESO
+        # ═══════════════════════════════════════════════════════════
+        
+        msg = await update.message.reply_text(
             f"🔄 Sincronizando grupo de **{slug}**...\n"
-            f"⏳ Fase 1/3: Escaneando miembros...\n\n"
-            f"👑 Admins encontrados: {len(admins)}\n"
-            f"📊 Total estimado: {total_members}\n\n"
-            f"_Nota: Telegram limita la lectura masiva de miembros._\n"
-            f"_Usaremos los datos de group_members existentes como base._",
+            f"⏳ Esto puede tardar varios minutos si el grupo es grande.\n\n"
+            f"📊 Fase 1/3: Obteniendo miembros del grupo...",
             parse_mode="Markdown"
         )
         
+        broadcaster_id = b["broadcaster_id"]
+        
         # ═══════════════════════════════════════════════════════════
-        # ESTRATEGIA ALTERNATIVA:
-        # Como Telegram no permite listar todos los miembros fácilmente,
-        # vamos a verificar los que YA están en group_members + detectar nuevos
+        # FASE 1: Obtener TODOS los miembros del grupo de Telegram
         # ═══════════════════════════════════════════════════════════
         
-        # Obtener usuarios actuales en BD
-        db_members = await self.db.all("""
-            SELECT telegram_id, username, twitch_id, twitch_login, is_subscribed
-            FROM group_members
-            WHERE group_id=%s AND broadcaster_id=%s
-        """, group_id, broadcaster_id)
+        telegram_members = {}  # {telegram_id: {username, status}}
         
-        db_ids = {m["telegram_id"] for m in db_members}
-        
-        logging.info(f"📊 Miembros en group_members: {len(db_ids)}")
-        
-        # Verificar cada uno si sigue en el grupo
-        still_in_group = set()
-        left_group = set()
-        
-        for i, m in enumerate(db_members):
-            tg_id = m["telegram_id"]
+        try:
+            # Primero obtener admins (estos siempre son accesibles)
+            admins = await context.bot.get_chat_administrators(group_id)
+            admin_ids = set()
             
-            # Actualizar progreso cada 50
-            if i > 0 and i % 50 == 0:
-                await msg.edit_text(
-                    f"🔄 Verificando miembros existentes...\n"
-                    f"📊 Procesados: {i}/{len(db_members)}",
-                    parse_mode="Markdown"
-                )
-                await asyncio.sleep(0.5)  # Evitar rate limit
+            for admin in admins:
+                telegram_members[admin.user.id] = {
+                    "username": admin.user.username,
+                    "first_name": admin.user.first_name,
+                    "status": admin.status,
+                    "is_admin": True
+                }
+                admin_ids.add(admin.user.id)
             
+            logging.info(f"✅ {len(admins)} administradores encontrados")
+            
+            # Ahora obtener el conteo total de miembros
             try:
-                member = await context.bot.get_chat_member(group_id, tg_id)
-                if member.status in ("member", "administrator", "creator", "restricted"):
-                    still_in_group.add(tg_id)
-                    if tg_id not in telegram_members:
-                        telegram_members[tg_id] = {
-                            "username": member.user.username,
-                            "first_name": member.user.first_name,
-                            "status": member.status,
-                            "is_admin": member.status in ("administrator", "creator")
-                        }
-                else:
-                    left_group.add(tg_id)
+                chat_info = await context.bot.get_chat(group_id)
+                total_members = getattr(chat_info, 'member_count', 0)
+                logging.info(f"📊 Total de miembros reportado por Telegram: {total_members}")
             except Exception as e:
-                # Usuario probablemente ya no está
-                left_group.add(tg_id)
+                total_members = 0
+                logging.warning(f"⚠️ No se pudo obtener member_count: {e}")
             
-            await asyncio.sleep(0.05)  # Rate limit
-        
-    except Exception as e:
-        logging.exception("Error obteniendo miembros del grupo")
-        return await msg.edit_text(
-            f"❌ Error al acceder al grupo:\n`{str(e)}`\n\n"
-            f"Asegúrate de que el bot es administrador del grupo.",
-            parse_mode="Markdown"
-        )
-    
-    # ═══════════════════════════════════════════════════════════
-    # FASE 2: Detectar diferencias
-    # ═══════════════════════════════════════════════════════════
-    
-    await msg.edit_text(
-        f"🔄 Fase 2/3: Analizando diferencias...\n\n"
-        f"📊 En grupo real: ~{total_members}\n"
-        f"📊 En BD actualmente: {len(db_ids)}\n"
-        f"✅ Verificados en grupo: {len(still_in_group)}\n"
-        f"🚪 Salieron del grupo: {len(left_group)}",
-        parse_mode="Markdown"
-    )
-    
-    # Usuarios que están en el grupo pero NO en BD
-    # (Esto solo detecta admins y los ya verificados)
-    missing_in_db = set(telegram_members.keys()) - db_ids
-    
-    # ═══════════════════════════════════════════════════════════
-    # FASE 3: Actualizar BD
-    # ═══════════════════════════════════════════════════════════
-    
-    added = 0
-    removed = 0
-    errors = 0
-    
-    # 1. Añadir los que faltan (marcados como NO verificados)
-    for tg_id in missing_in_db:
-        try:
-            member_info = telegram_members[tg_id]
-            
-            await self.db.exec("""
-                INSERT INTO group_members (
-                    group_id, telegram_id, username, 
-                    broadcaster_id, streamer_slug, 
-                    is_subscribed, joined_at
-                )
-                VALUES (%s, %s, %s, %s, %s, FALSE, NOW())
-                ON CONFLICT (group_id, telegram_id) DO NOTHING
-            """, group_id, tg_id, member_info["username"], 
-                 broadcaster_id, slug)
-            
-            added += 1
-            logging.info(f"➕ Añadido: @{member_info['username']} ({tg_id})")
-            
-        except Exception as e:
-            errors += 1
-            logging.error(f"❌ Error añadiendo {tg_id}: {e}")
-    
-    # 2. Eliminar los que ya no están
-    for tg_id in left_group:
-        try:
-            await self.db.exec("""
-                DELETE FROM group_members
-                WHERE group_id=%s AND telegram_id=%s
-            """, group_id, tg_id)
-            
-            removed += 1
-            logging.info(f"🗑️ Eliminado: {tg_id} (ya no está en el grupo)")
-            
-        except Exception as e:
-            errors += 1
-            logging.error(f"❌ Error eliminando {tg_id}: {e}")
-    
-    # ═══════════════════════════════════════════════════════════
-    # REPORTE FINAL
-    # ═══════════════════════════════════════════════════════════
-    
-    await msg.edit_text(
-        f"✅ **Sincronización completada para {slug}**\n"
-        f"{'═'*40}\n\n"
-        f"📊 **RESUMEN**:\n"
-        f"• Total en grupo (Telegram): ~{total_members}\n"
-        f"• Verificados activos: {len(still_in_group)}\n"
-        f"• En BD antes: {len(db_ids)}\n"
-        f"• En BD después: {len(db_ids) + added - removed}\n\n"
-        f"{'─'*40}\n\n"
-        f"📥 **CAMBIOS**:\n"
-        f"• ➕ Añadidos: **{added}**\n"
-        f"• 🗑️ Eliminados: **{removed}**\n"
-        f"• ❌ Errores: **{errors}**\n\n"
-        f"{'─'*40}\n\n"
-        f"⚠️ **IMPORTANTE**:\n"
-        f"Los {added} usuarios añadidos están marcados como:\n"
-        f"• `is_subscribed = FALSE`\n"
-        f"• `twitch_id = NULL`\n\n"
-        f"Necesitan verificarse con `/start {slug}` para completar sus datos.\n\n"
-        f"💡 **Siguiente paso**:\n"
-        f"Ejecuta `/verify` para ver quiénes necesitan verificarse.",
-        parse_mode="Markdown"
-    )
-    
-    # ═══════════════════════════════════════════════════════════
-    # REPORTE DETALLADO ADICIONAL
-    # ═══════════════════════════════════════════════════════════
-    
-    # Generar lista de los añadidos (si no son muchos)
-    if added > 0 and added <= 50:
-        added_list = "\n\n📝 **Usuarios añadidos**:\n"
-        for tg_id in missing_in_db:
-            member_info = telegram_members.get(tg_id, {})
-            username = member_info.get("username", f"ID:{tg_id}")
-            is_admin = " 👑" if member_info.get("is_admin") else ""
-            added_list += f"• @{username}{is_admin}\n"
-        
-        if len(added_list) < 3000:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=added_list,
+            await msg.edit_text(
+                f"🔄 Sincronizando grupo de **{slug}**...\n"
+                f"⏳ Fase 1/3: Escaneando miembros...\n\n"
+                f"👑 Admins encontrados: {len(admins)}\n"
+                f"📊 Total estimado: {total_members}\n\n"
+                f"_Nota: Telegram limita la lectura masiva de miembros._\n"
+                f"_Usaremos los datos de group_members existentes como base._",
                 parse_mode="Markdown"
             )
-    
-    elif added > 50:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"ℹ️ Se añadieron {added} usuarios (demasiados para listar).\n"
-                 f"Ejecuta `/verify` para ver el estado completo.",
+            
+            # ═══════════════════════════════════════════════════════════
+            # ESTRATEGIA ALTERNATIVA:
+            # Como Telegram no permite listar todos los miembros fácilmente,
+            # vamos a verificar los que YA están en group_members + detectar nuevos
+            # ═══════════════════════════════════════════════════════════
+            
+            # Obtener usuarios actuales en BD
+            db_members = await self.db.all("""
+                SELECT telegram_id, username, twitch_id, twitch_login, is_subscribed
+                FROM group_members
+                WHERE group_id=%s AND broadcaster_id=%s
+            """, group_id, broadcaster_id)
+            
+            db_ids = {m["telegram_id"] for m in db_members}
+            
+            logging.info(f"📊 Miembros en group_members: {len(db_ids)}")
+            
+            # Verificar cada uno si sigue en el grupo
+            still_in_group = set()
+            left_group = set()
+            
+            for i, m in enumerate(db_members):
+                tg_id = m["telegram_id"]
+                
+                # Actualizar progreso cada 50
+                if i > 0 and i % 50 == 0:
+                    await msg.edit_text(
+                        f"🔄 Verificando miembros existentes...\n"
+                        f"📊 Procesados: {i}/{len(db_members)}",
+                        parse_mode="Markdown"
+                    )
+                    await asyncio.sleep(0.5)  # Evitar rate limit
+                
+                try:
+                    member = await context.bot.get_chat_member(group_id, tg_id)
+                    if member.status in ("member", "administrator", "creator", "restricted"):
+                        still_in_group.add(tg_id)
+                        if tg_id not in telegram_members:
+                            telegram_members[tg_id] = {
+                                "username": member.user.username,
+                                "first_name": member.user.first_name,
+                                "status": member.status,
+                                "is_admin": member.status in ("administrator", "creator")
+                            }
+                    else:
+                        left_group.add(tg_id)
+                except Exception as e:
+                    # Usuario probablemente ya no está
+                    left_group.add(tg_id)
+                
+                await asyncio.sleep(0.05)  # Rate limit
+            
+        except Exception as e:
+            logging.exception("Error obteniendo miembros del grupo")
+            return await msg.edit_text(
+                f"❌ Error al acceder al grupo:\n`{str(e)}`\n\n"
+                f"Asegúrate de que el bot es administrador del grupo.",
+                parse_mode="Markdown"
+            )
+        
+        # ═══════════════════════════════════════════════════════════
+        # FASE 2: Detectar diferencias
+        # ═══════════════════════════════════════════════════════════
+        
+        await msg.edit_text(
+            f"🔄 Fase 2/3: Analizando diferencias...\n\n"
+            f"📊 En grupo real: ~{total_members}\n"
+            f"📊 En BD actualmente: {len(db_ids)}\n"
+            f"✅ Verificados en grupo: {len(still_in_group)}\n"
+            f"🚪 Salieron del grupo: {len(left_group)}",
             parse_mode="Markdown"
         )
+        
+        # Usuarios que están en el grupo pero NO en BD
+        # (Esto solo detecta admins y los ya verificados)
+        missing_in_db = set(telegram_members.keys()) - db_ids
+        
+        # ═══════════════════════════════════════════════════════════
+        # FASE 3: Actualizar BD
+        # ═══════════════════════════════════════════════════════════
+        
+        added = 0
+        removed = 0
+        errors = 0
+        
+        # 1. Añadir los que faltan (marcados como NO verificados)
+        for tg_id in missing_in_db:
+            try:
+                member_info = telegram_members[tg_id]
+                
+                await self.db.exec("""
+                    INSERT INTO group_members (
+                        group_id, telegram_id, username, 
+                        broadcaster_id, streamer_slug, 
+                        is_subscribed, joined_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, FALSE, NOW())
+                    ON CONFLICT (group_id, telegram_id) DO NOTHING
+                """, group_id, tg_id, member_info["username"], 
+                     broadcaster_id, slug)
+                
+                added += 1
+                logging.info(f"➕ Añadido: @{member_info['username']} ({tg_id})")
+                
+            except Exception as e:
+                errors += 1
+                logging.error(f"❌ Error añadiendo {tg_id}: {e}")
+        
+        # 2. Eliminar los que ya no están
+        for tg_id in left_group:
+            try:
+                await self.db.exec("""
+                    DELETE FROM group_members
+                    WHERE group_id=%s AND telegram_id=%s
+                """, group_id, tg_id)
+                
+                removed += 1
+                logging.info(f"🗑️ Eliminado: {tg_id} (ya no está en el grupo)")
+                
+            except Exception as e:
+                errors += 1
+                logging.error(f"❌ Error eliminando {tg_id}: {e}")
+        
+        # ═══════════════════════════════════════════════════════════
+        # REPORTE FINAL
+        # ═══════════════════════════════════════════════════════════
+        
+        await msg.edit_text(
+            f"✅ **Sincronización completada para {slug}**\n"
+            f"{'═'*40}\n\n"
+            f"📊 **RESUMEN**:\n"
+            f"• Total en grupo (Telegram): ~{total_members}\n"
+            f"• Verificados activos: {len(still_in_group)}\n"
+            f"• En BD antes: {len(db_ids)}\n"
+            f"• En BD después: {len(db_ids) + added - removed}\n\n"
+            f"{'─'*40}\n\n"
+            f"📥 **CAMBIOS**:\n"
+            f"• ➕ Añadidos: **{added}**\n"
+            f"• 🗑️ Eliminados: **{removed}**\n"
+            f"• ❌ Errores: **{errors}**\n\n"
+            f"{'─'*40}\n\n"
+            f"⚠️ **IMPORTANTE**:\n"
+            f"Los {added} usuarios añadidos están marcados como:\n"
+            f"• `is_subscribed = FALSE`\n"
+            f"• `twitch_id = NULL`\n\n"
+            f"Necesitan verificarse con `/start {slug}` para completar sus datos.\n\n"
+            f"💡 **Siguiente paso**:\n"
+            f"Ejecuta `/verify` para ver quiénes necesitan verificarse.",
+            parse_mode="Markdown"
+        )
+        
+        # ═══════════════════════════════════════════════════════════
+        # REPORTE DETALLADO ADICIONAL
+        # ═══════════════════════════════════════════════════════════
+        
+        # Generar lista de los añadidos (si no son muchos)
+        if added > 0 and added <= 50:
+            added_list = "\n\n📝 **Usuarios añadidos**:\n"
+            for tg_id in missing_in_db:
+                member_info = telegram_members.get(tg_id, {})
+                username = member_info.get("username", f"ID:{tg_id}")
+                is_admin = " 👑" if member_info.get("is_admin") else ""
+                added_list += f"• @{username}{is_admin}\n"
+            
+            if len(added_list) < 3000:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=added_list,
+                    parse_mode="Markdown"
+                )
+        
+        elif added > 50:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"ℹ️ Se añadieron {added} usuarios (demasiados para listar).\n"
+                     f"Ejecuta `/verify` para ver el estado completo.",
+                parse_mode="Markdown"
+            )
 
     # ─────────────────────────────────
     # 👑 Sincronizar miembros del grupo
