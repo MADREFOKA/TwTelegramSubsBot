@@ -10,7 +10,7 @@ import jinja2
 from datetime import datetime, timezone
 from aiohttp import web
 from telegram.ext import (ApplicationBuilder, CommandHandler, ChatMemberHandler, CallbackQueryHandler)
-from telegram import Update
+from telegram import Update, ChatMember
 from app.db import Database
 from app.security import TokenCipher
 from app.commands import Commands
@@ -114,7 +114,7 @@ class TwitchSubBot:
                 timeout=15
             ).json()
     
-            # ❗ Diagnóstico: error explícito
+            # ⚠ Diagnóstico: error explícito
             if "access_token" not in data:
                 error_msg = data.get("message") or data.get("error") or "Error desconocido"
                 logging.error(f"❌ ERROR al refrescar el token de Twitch: {data}")
@@ -183,38 +183,106 @@ class TwitchSubBot:
             logging.exception("Error procesando webhook:")
             return web.Response(text=f"Error interno: {e}", status=500)
 
-    # ───────────────────────────────────────────────
-    # 🔸 Nuevo handler: actualiza automáticamente group_members
-    # ───────────────────────────────────────────────
+    # ────────────────────────────────────────────────
+    # 🔥 MEJORADO: Handler de entrada/salida con validación
+    # ────────────────────────────────────────────────
     async def on_member_update(self, update: Update, context):
-        """Detecta entradas y salidas de miembros para mantener group_members sincronizado."""
+        """
+        Detecta cambios de estado de miembros.
+        - Entrada: Verifica si está en telegram_users como sub antes de permitir
+        - Salida: Limpia de group_members
+        """
         member = update.chat_member
         new_status = member.new_chat_member.status
         old_status = member.old_chat_member.status
         tg_user = member.new_chat_member.user
         chat = update.effective_chat
 
+        # Ignorar bots
+        if tg_user.is_bot:
+            return
+
         try:
-            if new_status == "member" and old_status in ("left", "kicked"):
-                # Se unió al grupo
-                await self.db.exec("""
-                    INSERT INTO group_members (group_id, telegram_id, username, joined_at)
-                    VALUES (%s,%s,%s,NOW())
-                    ON CONFLICT (group_id, telegram_id) DO NOTHING;
-                """, chat.id, tg_user.id, tg_user.username)
-                logging.info(f"👋 Añadido a group_members: @{tg_user.username or tg_user.id}")
+            # Buscar broadcaster asociado a este grupo
+            b = await self.db.one("""
+                SELECT * FROM broadcasters 
+                WHERE group_id=%s OR free_group_id=%s
+            """, chat.id, chat.id)
 
+            if not b:
+                logging.info(f"ℹ️ Grupo {chat.id} no está vinculado a ningún broadcaster")
+                return
+
+            is_premium_group = (chat.id == b.get("group_id"))
+            is_free_group = (chat.id == b.get("free_group_id"))
+
+            # ═══════════════════════════════════════
+            # 📥 USUARIO SE UNIÓ AL GRUPO
+            # ═══════════════════════════════════════
+            if new_status in ("member", "administrator", "creator") and old_status in ("left", "kicked"):
+                
+                # 🔥 GRUPO PREMIUM: Verificar que esté autorizado
+                if is_premium_group:
+                    # Verificar si está registrado como sub
+                    tu = await self.db.one("""
+                        SELECT * FROM telegram_users
+                        WHERE telegram_id=%s AND streamer_id=%s AND is_subscribed=TRUE
+                    """, tg_user.id, b["broadcaster_id"])
+
+                    if not tu:
+                        # NO está autorizado → expulsar inmediatamente
+                        logging.warning(
+                            f"🚫 Usuario {tg_user.username or tg_user.id} entró al grupo premium "
+                            f"sin verificar suscripción. Expulsando..."
+                        )
+                        try:
+                            await context.bot.ban_chat_member(chat.id, tg_user.id)
+                            await asyncio.sleep(0.5)
+                            await context.bot.unban_chat_member(chat.id, tg_user.id)
+                        except Exception as e:
+                            logging.error(f"❌ Error expulsando usuario no autorizado: {e}")
+                        return
+
+                    # SÍ está autorizado → registrar en group_members
+                    await self.db.exec("""
+                        INSERT INTO group_members (
+                            group_id, telegram_id, username, twitch_id, twitch_login,
+                            broadcaster_id, streamer_slug, is_subscribed, joined_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
+                        ON CONFLICT (group_id, telegram_id)
+                        DO UPDATE SET
+                            username = EXCLUDED.username,
+                            twitch_id = EXCLUDED.twitch_id,
+                            twitch_login = EXCLUDED.twitch_login,
+                            is_subscribed = TRUE
+                    """, chat.id, tg_user.id, tg_user.username, 
+                         tu.get("linked_twitch_id"), tu.get("twitch_login"),
+                         b["broadcaster_id"], b["slug"])
+                    
+                    logging.info(f"✅ Usuario autorizado añadido: @{tg_user.username} → {b['slug']}")
+
+                # 🎁 GRUPO GRATUITO: Solo registrar
+                elif is_free_group:
+                    logging.info(f"ℹ️ Usuario {tg_user.username} se unió al grupo gratuito")
+
+            # ═══════════════════════════════════════
+            # 📤 USUARIO SALIÓ/FUE EXPULSADO
+            # ═══════════════════════════════════════
             elif new_status in ("left", "kicked"):
-                # Se fue o fue expulsado
-                await self.db.exec("DELETE FROM group_members WHERE group_id=%s AND telegram_id=%s;",
-                                   chat.id, tg_user.id)
-                logging.info(f"🚪 Eliminado de group_members: @{tg_user.username or tg_user.id}")
-        except Exception as e:
-            logging.warning(f"⚠️ Error en on_member_update: {e}")
+                if is_premium_group:
+                    await self.db.exec("""
+                        DELETE FROM group_members 
+                        WHERE group_id=%s AND telegram_id=%s
+                    """, chat.id, tg_user.id)
+                    logging.info(f"🚪 Usuario eliminado de group_members: @{tg_user.username}")
 
-    # ───────────────────────────────────────────────
+        except Exception as e:
+            logging.exception(f"❌ Error en on_member_update: {e}")
+
+    # ────────────────────────────────────────────────
     # START principal
-    # ───────────────────────────────────────────────
+    # ────────────────────────────────────────────────
     async def start(self):
         await self.db.init()
         app = ApplicationBuilder().token(self.cfg.token).build()
@@ -234,8 +302,9 @@ class TwitchSubBot:
         app.add_handler(CallbackQueryHandler(self.cmds.on_callback, pattern="^guide_usage$"))
         app.add_handler(CommandHandler("sync_members", self.cmds.cmd_sync_members))
         app.add_handler(CommandHandler("auditcheck", self.auditor.cmd_auditcheck))
+        app.add_handler(CommandHandler("verify", self.auditor.cmd_verify))
 
-        # 🔸 Nuevo: handler de entrada/salida de miembros
+        # 🔥 MEJORADO: Handler de cambios de miembros con validación
         app.add_handler(ChatMemberHandler(self.on_member_update, ChatMemberHandler.CHAT_MEMBER))
 
         # Webhook
