@@ -175,17 +175,14 @@ class TwitchSubBot:
         if token and token != self.cfg.secret_token:
             return web.Response(text="Unauthorized", status=403)
         try:
-            data = await request.json()
-            update = Update.de_json(data, self.app.bot)
-            await self.app.process_update(update)
+            body = await request.json()
+            update = Update.de_json(body, self.app.bot)
+            await self.app.update_queue.put(update)
             return web.Response(text="OK")
         except Exception as e:
-            logging.exception("Error procesando webhook:")
-            return web.Response(text=f"Error interno: {e}", status=500)
+            logging.exception(f"Error webhook: {e}")
+            return web.Response(text="Error", status=500)
 
-    # ────────────────────────────────────────────────
-    # 🔥 MEJORADO: Handler de entrada/salida con validación
-    # ────────────────────────────────────────────────
     async def on_member_update(self, update: Update, context):
         """
         Detecta cambios de estado de miembros.
@@ -281,27 +278,13 @@ class TwitchSubBot:
             logging.exception(f"❌ Error en on_member_update: {e}")
 
     # ────────────────────────────────────────────────
-    # 🔥 START PRINCIPAL - CORREGIDO PARA RENDER
+    # 🔥 START PRINCIPAL - CORREGIDO
     # ────────────────────────────────────────────────
     async def start(self):
-        # ════════════════════════════════════════════════════════════
-        # 🔥 PASO 1: ABRIR PUERTO INMEDIATAMENTE (para Render)
-        # ════════════════════════════════════════════════════════════
         port = int(os.getenv("PORT", "8080"))
         
-        # Crear servidor web mínimo que responde de inmediato
-        web_app = web.Application()
-        web_app.router.add_get("/", lambda _: web.Response(text="✅ Iniciando..."))
-        web_app.router.add_get("/health", lambda _: web.Response(text="OK"))
-        
-        runner = web.AppRunner(web_app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
-        await site.start()
-        logging.info(f"🌐 Puerto {port} abierto - Render detectará que estamos activos")
-        
         # ════════════════════════════════════════════════════════════
-        # 🔥 PASO 2: INICIALIZAR BD Y BOT (puede tardar)
+        # 🔥 PASO 1: INICIALIZAR BD Y BOT
         # ════════════════════════════════════════════════════════════
         await self.db.init()
         logging.info("✅ Base de datos inicializada")
@@ -327,7 +310,9 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("verify", self.auditor.cmd_verify))
         app.add_handler(ChatMemberHandler(self.on_member_update, ChatMemberHandler.CHAT_MEMBER))
 
-        # Webhook
+        # ════════════════════════════════════════════════════════════
+        # 🔥 PASO 2: CONFIGURAR WEBHOOK
+        # ════════════════════════════════════════════════════════════
         webhook_url = f"{self.cfg.base_url}/webhook"
         requests.get(
             f"https://api.telegram.org/bot{self.cfg.token}/setWebhook",
@@ -339,17 +324,18 @@ class TwitchSubBot:
             },
             timeout=10,
         )
-        logging.info("✅ Webhook configurado")
+        logging.info(f"✅ Webhook configurado en: {webhook_url}")
 
         # ════════════════════════════════════════════════════════════
-        # 🔥 PASO 3: RECONFIGURAR SERVIDOR CON TODAS LAS RUTAS
+        # 🔥 PASO 3: CREAR SERVIDOR WEB CON TODAS LAS RUTAS
         # ════════════════════════════════════════════════════════════
+        web_app = web.Application()
         web_app["bot"] = app
+        
         template_path = os.path.join(os.path.dirname(__file__), "templates")
         aiohttp_jinja2.setup(web_app, loader=jinja2.FileSystemLoader(template_path))
 
-        # Limpiar rutas anteriores y añadir las completas
-        web_app.router._resources.clear()
+        # Añadir TODAS las rutas ANTES de iniciar el servidor
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
         web_app.router.add_get("/twitch/callback", self.oauth.twitch_callback_user)
@@ -358,7 +344,18 @@ class TwitchSubBot:
         web_app.router.add_get("/health", lambda _: web.Response(text="OK"))
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
+        # ════════════════════════════════════════════════════════════
+        # 🔥 PASO 4: INICIAR SERVIDOR
+        # ════════════════════════════════════════════════════════════
+        runner = web.AppRunner(web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logging.info(f"🌐 Servidor web iniciado en puerto {port}")
+
         await app.initialize()
         await app.start()
-        logging.info("💜 Bot y servidor web iniciados correctamente.")
+        logging.info("💜 Bot de Telegram iniciado correctamente")
+        logging.info(f"📡 Escuchando webhooks en: {webhook_url}")
+        
         await asyncio.Event().wait()
