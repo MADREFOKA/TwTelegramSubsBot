@@ -281,10 +281,31 @@ class TwitchSubBot:
             logging.exception(f"❌ Error en on_member_update: {e}")
 
     # ────────────────────────────────────────────────
-    # START principal
+    # 🔥 START PRINCIPAL - CORREGIDO PARA RENDER
     # ────────────────────────────────────────────────
     async def start(self):
+        # ════════════════════════════════════════════════════════════
+        # 🔥 PASO 1: ABRIR PUERTO INMEDIATAMENTE (para Render)
+        # ════════════════════════════════════════════════════════════
+        port = int(os.getenv("PORT", "8080"))
+        
+        # Crear servidor web mínimo que responde de inmediato
+        web_app = web.Application()
+        web_app.router.add_get("/", lambda _: web.Response(text="✅ Iniciando..."))
+        web_app.router.add_get("/health", lambda _: web.Response(text="OK"))
+        
+        runner = web.AppRunner(web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logging.info(f"🌐 Puerto {port} abierto - Render detectará que estamos activos")
+        
+        # ════════════════════════════════════════════════════════════
+        # 🔥 PASO 2: INICIALIZAR BD Y BOT (puede tardar)
+        # ════════════════════════════════════════════════════════════
         await self.db.init()
+        logging.info("✅ Base de datos inicializada")
+        
         app = ApplicationBuilder().token(self.cfg.token).build()
         self.app = app
 
@@ -304,8 +325,6 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("sync_group", self.cmds.cmd_sync_group))
         app.add_handler(CommandHandler("auditcheck", self.auditor.cmd_auditcheck))
         app.add_handler(CommandHandler("verify", self.auditor.cmd_verify))
-
-        # 🔥 MEJORADO: Handler de cambios de miembros con validación
         app.add_handler(ChatMemberHandler(self.on_member_update, ChatMemberHandler.CHAT_MEMBER))
 
         # Webhook
@@ -320,27 +339,26 @@ class TwitchSubBot:
             },
             timeout=10,
         )
+        logging.info("✅ Webhook configurado")
 
-        # Servidor web
-        web_app = web.Application()
+        # ════════════════════════════════════════════════════════════
+        # 🔥 PASO 3: RECONFIGURAR SERVIDOR CON TODAS LAS RUTAS
+        # ════════════════════════════════════════════════════════════
         web_app["bot"] = app
         template_path = os.path.join(os.path.dirname(__file__), "templates")
         aiohttp_jinja2.setup(web_app, loader=jinja2.FileSystemLoader(template_path))
 
+        # Limpiar rutas anteriores y añadir las completas
+        web_app.router._resources.clear()
         web_app.router.add_post("/webhook", self.webhook_handler)
         web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
         web_app.router.add_get("/twitch/callback", self.oauth.twitch_callback_user)
         web_app.router.add_get("/dashboard/{slug}", self.dashboard.page, name="dashboard_page")
         web_app.router.add_get("/dashboard/auditnow/{slug}", self.dashboard.trigger_audit)
+        web_app.router.add_get("/health", lambda _: web.Response(text="OK"))
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
-
-        runner = web.AppRunner(web_app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080")))
-        await site.start()
 
         await app.initialize()
         await app.start()
         logging.info("💜 Bot y servidor web iniciados correctamente.")
         await asyncio.Event().wait()
-        
