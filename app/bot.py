@@ -301,6 +301,7 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("priv_list", self.cmds.cmd_priv_list))
         app.add_handler(CallbackQueryHandler(self.cmds.on_callback, pattern="^guide_usage$"))
         app.add_handler(CommandHandler("sync_members", self.cmds.cmd_sync_members))
+        app.add_handler(CommandHandler("sync_group", self.cmds.cmd_sync_group))
         app.add_handler(CommandHandler("auditcheck", self.auditor.cmd_auditcheck))
         app.add_handler(CommandHandler("verify", self.auditor.cmd_verify))
 
@@ -342,3 +343,4 @@ class TwitchSubBot:
         await app.start()
         logging.info("💜 Bot y servidor web iniciados correctamente.")
         await asyncio.Event().wait()
+        
