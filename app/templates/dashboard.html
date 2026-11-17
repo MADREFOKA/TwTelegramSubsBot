@@ -109,8 +109,7 @@
     </div>
 
     <div class="center">
-      <form method="get" action="/dashboard/auditnow/{{ slug }}">
-        <input type="hidden" name="token" value="{{ dashboard_token }}">
+      <form method="post" action="/dashboard/auditnow/{{ slug }}?token={{ dashboard_token }}">
         <button type="submit">📊 Forzar auditoría ahora</button>
       </form>
     </div>

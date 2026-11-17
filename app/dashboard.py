@@ -1,12 +1,15 @@
 import aiohttp_jinja2
 from aiohttp import web
+import asyncio
 import logging
 from app.auditor import run_full_audit
 
 
 class Dashboard:
-    def __init__(self, db):
+    def __init__(self, db, cfg=None, refresh_twitch_token=None):
         self.db = db
+        self.cfg = cfg
+        self.refresh_twitch_token = refresh_twitch_token
 
     # ───────────────────────────────
     # 📊 PÁGINA PRINCIPAL DEL DASHBOARD
@@ -68,14 +71,13 @@ class Dashboard:
         if not b:
             return web.Response(text="❌ Token inválido o streamer no encontrado.", status=403)
 
-        bot_instance = getattr(request.app, "bot", None)
-        if not bot_instance:
+        tg_app = request.app.get("bot")
+        if not tg_app or not self.refresh_twitch_token:
             return web.Response(text="❌ Bot no inicializado.", status=500)
 
-        try:
-            await run_full_audit(bot_instance, self.db, slug, bot_instance.refresh_twitch_token)
-            logging.info(f"✅ Auditoría forzada completada para {slug}.")
-            return web.Response(text="✅ Auditoría completada correctamente. Actualiza la página.")
-        except Exception as e:
-            logging.exception("Error en trigger_audit:")
-            return web.Response(text=f"❌ Error al ejecutar la auditoría: {e}", status=500)
+        # En segundo plano: una auditoría grande tarda minutos y la petición HTTP caducaría
+        asyncio.create_task(
+            run_full_audit(tg_app.bot, self.db, self.cfg, slug, self.refresh_twitch_token)
+        )
+        logging.info(f"🚀 Auditoría forzada desde dashboard para {slug}.")
+        return web.Response(text="⏳ Auditoría iniciada. Actualiza la página en unos minutos.")

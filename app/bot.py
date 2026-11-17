@@ -45,7 +45,7 @@ class TwitchSubBot:
             self.cfg, self.db, self.send_tg, self.refresh_twitch_token, self.days_until, self.cipher
         )
         self.auditor = Auditor(self.db, self.cfg, self.send_tg, self.refresh_twitch_token)
-        self.dashboard = Dashboard(self.db)
+        self.dashboard = Dashboard(self.db, self.cfg, self.refresh_twitch_token)
 
     async def send_tg(self, chat_id, text, md=False, html=False, disable_preview=False, reply_markup=None):
         """Envia mensajes a Telegram de forma segura."""
@@ -340,7 +340,7 @@ class TwitchSubBot:
         web_app.router.add_get("/twitch/setup/callback", self.oauth.twitch_callback_setup)
         web_app.router.add_get("/twitch/callback", self.oauth.twitch_callback_user)
         web_app.router.add_get("/dashboard/{slug}", self.dashboard.page, name="dashboard_page")
-        web_app.router.add_get("/dashboard/auditnow/{slug}", self.dashboard.trigger_audit)
+        web_app.router.add_post("/dashboard/auditnow/{slug}", self.dashboard.trigger_audit)
         web_app.router.add_get("/health", lambda _: web.Response(text="OK"))
         web_app.router.add_get("/", lambda _: web.Response(text="✅ Bot operativo correctamente."))
 
