@@ -544,21 +544,10 @@ class Auditor:
         if not group_id:
             return await msg.edit_text("❌ Este streamer no tiene grupo premium vinculado.")
 
-        # Obtener lista de Twitch
+        # Obtener lista de Twitch (con total reportado)
         try:
-            access_token = await self.refresh_twitch_token(b)
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Client-Id": self.cfg.client_id,
-            }
-
-            subs_set, err = fetch_all_subs(broadcaster_id, headers)
-
-            if err and err[0] == 401:
-                access_token = await self.refresh_twitch_token(b)
-                headers["Authorization"] = f"Bearer {access_token}"
-                subs_set, err = fetch_all_subs(broadcaster_id, headers)
-
+            subs_set, tw_total, err = await _twitch_call(
+                _fetch_subs_blocking, b, self.cfg, self.refresh_twitch_token)
             if err:
                 status, body = err
                 return await msg.edit_text(
@@ -567,17 +556,19 @@ class Auditor:
                     f"Detalle: `{body[:200]}`",
                     parse_mode="Markdown"
                 )
-
         except Exception as e:
             logging.exception("Error obteniendo lista de subs")
             return await msg.edit_text(f"❌ **Error**: `{str(e)}`", parse_mode="Markdown")
 
         # Obtener miembros
         members = await self.db.all("""
-            SELECT telegram_id, username, twitch_id, twitch_login, is_subscribed
-            FROM group_members
-            WHERE group_id=%s AND broadcaster_id=%s
-            ORDER BY username
+            SELECT gm.telegram_id, gm.username, gm.twitch_login, gm.is_subscribed,
+                   COALESCE(gm.twitch_id, tu.linked_twitch_id) AS twitch_id
+            FROM group_members gm
+            LEFT JOIN telegram_users tu
+                   ON tu.telegram_id = gm.telegram_id AND tu.streamer_id = gm.broadcaster_id
+            WHERE gm.group_id=%s AND gm.broadcaster_id=%s
+            ORDER BY gm.username
         """, group_id, broadcaster_id)
 
         if not members:
@@ -647,6 +638,23 @@ class Auditor:
                     "twitch_id": twitch_id
                 })
 
+        # Doble verificación individual de los "no subs"
+        falsos_negativos = 0
+        confirm_err = None
+        if results["not_subs"]:
+            confirmed, confirm_err = await _twitch_call(
+                _confirm_subs_blocking, b, self.cfg, self.refresh_twitch_token,
+                [u["twitch_id"] for u in results["not_subs"]])
+            if not confirm_err and confirmed:
+                still_bad = []
+                for u in results["not_subs"]:
+                    if str(u["twitch_id"]) in confirmed:
+                        results["subs_ok"].append(u)
+                        falsos_negativos += 1
+                    else:
+                        still_bad.append(u)
+                results["not_subs"] = still_bad
+
         # Generar reporte
         total_ok = len(results["subs_ok"])
         total_bad = len(results["not_subs"])
@@ -656,7 +664,16 @@ class Auditor:
         total_ghosts = len(results["not_in_group"])
 
         report = f"🔍 **VERIFICACIÓN COMPLETA: {slug}**\n{'═'*40}\n\n"
-        report += f"📊 **RESUMEN**\n• Total en BD: `{len(members)}`\n• Subs en Twitch: `{len(subs_set)}`\n\n"
+        report += (f"📊 **RESUMEN**\n• Total en BD: `{len(members)}`\n"
+                   f"• Subs en Twitch (lista): `{len(subs_set)}` de `{tw_total}` que reporta Twitch\n")
+        if tw_total and len(subs_set) < tw_total * MIN_LIST_COMPLETENESS:
+            report += "⚠️ La lista de Twitch llegó INCOMPLETA (la auditoría se cancelaría)\n"
+        if falsos_negativos:
+            report += (f"🔁 `{falsos_negativos}` faltaban en la lista pero SON subs "
+                       f"(antes se habrían expulsado)\n")
+        if confirm_err:
+            report += f"⚠️ No se pudo hacer la verificación individual (Twitch {confirm_err[0]})\n"
+        report += "\n"
         report += f"✅ Subs verificados: `{total_ok}`\n"
         report += f"❌ NO son subs: `{total_bad}`\n"
         report += f"⚠️ Sin twitch_id: `{total_no_id}`\n"
@@ -681,9 +698,16 @@ class Auditor:
             report += "\n"
 
         report += f"{'═'*40}\n💡 **ACCIONES**:\n\n"
-        if total_bad > 0 or total_no_id > 0:
-            report += f"⚠️ **{total_bad + total_no_id}** usuarios serían expulsados.\n• Usa `/auditnow` cuando estés listo.\n\n"
-        else:
+        normales = total_ok + total_bad + total_no_id
+        if normales and total_bad / normales > MAX_KICK_RATIO:
+            report += (f"⛔ **{total_bad}/{normales}** no son subs (> {int(MAX_KICK_RATIO*100)}%): "
+                       f"la auditoría se CANCELARÍA por seguridad.\n\n")
+        elif total_bad > 0:
+            report += (f"⚠️ **{total_bad}** usuarios serían expulsados tras {GRACE_HOURS:g}h de gracia.\n"
+                       f"• Usa `/auditnow` cuando estés listo.\n\n")
+        if total_no_id > 0:
+            report += f"ℹ️ **{total_no_id}** sin twitch_id: NO se expulsan, deben hacer /start.\n\n"
+        if total_bad == 0 and total_no_id == 0:
             report += "✅ Todos verificados como subs.\n\n"
 
         if total_ghosts > 0:
