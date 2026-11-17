@@ -295,9 +295,10 @@ class Commands:
 
             # En este punto: no admin, no privilegiado, no sub => expulsar
             try:
-                # 🔹 Expulsión temporal (30 segundos)
-                until = datetime.now() + timedelta(seconds=30)
-                await context.bot.ban_chat_member(group_id, tg_id, until_date=until)
+                # 🔹 Expulsión (ban + unban). OJO: until_date < 30s Telegram lo trata como ban PERMANENTE
+                await context.bot.ban_chat_member(group_id, tg_id)
+                await asyncio.sleep(0.3)
+                await context.bot.unban_chat_member(group_id, tg_id, only_if_banned=True)
                 expulsados += 1
                 expulsados_total += 1
                 logging.info(f"🧹 Expulsado temporalmente {tg_id} ({r['username']}) por limpieza inicial (no sub).")
@@ -572,8 +573,8 @@ class Commands:
                     else:
                         left_group.add(tg_id)
                 except Exception as e:
-                    # Usuario probablemente ya no está
-                    left_group.add(tg_id)
+                    # Un error (rate limit, red…) NO significa que se haya ido: no tocar
+                    logging.warning(f"⚠️ get_chat_member({tg_id}) falló, se deja como está: {e}")
                 
                 await asyncio.sleep(0.05)  # Rate limit
             
@@ -771,8 +772,10 @@ class Commands:
                     else:
                         removed.add(tg_id)
 
-                except Exception:
-                    removed.add(tg_id)
+                except Exception as e:
+                    # Error transitorio: no lo damos por fuera (evita borrar su twitch_id)
+                    logging.warning(f"⚠️ get_chat_member({tg_id}) falló, se mantiene: {e}")
+                    still_inside.add(tg_id)
 
                 await asyncio.sleep(0.05)
 
@@ -782,13 +785,16 @@ class Commands:
                 if tg_id not in db_ids:
                     await self.db.exec("""
                         INSERT INTO group_members (
-                            group_id, telegram_id, username,
+                            group_id, telegram_id, username, twitch_id, twitch_login,
                             broadcaster_id, streamer_slug, is_subscribed, joined_at
                         )
-                        VALUES (%s,%s,NULL,%s,%s,TRUE,NOW())
+                        SELECT %s, %s, tu.username, tu.linked_twitch_id, tu.twitch_login,
+                               %s, %s, tu.is_subscribed, NOW()
+                        FROM telegram_users tu
+                        WHERE tu.telegram_id=%s AND tu.streamer_id=%s
                         ON CONFLICT DO NOTHING
-                    """, group_id, tg_id,
-                         b["broadcaster_id"], b["slug"])
+                    """, group_id, tg_id, b["broadcaster_id"], b["slug"],
+                         tg_id, b["broadcaster_id"])
                     added_count += 1
 
             # 4. Borrar los que están en DB pero NO dentro del grupo real
