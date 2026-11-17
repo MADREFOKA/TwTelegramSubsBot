@@ -491,6 +491,89 @@ class Auditor:
         return text
 
     # =================================================================
+    #                    /checksub <twitch_login>  (diagnóstico)
+    # =================================================================
+
+    async def cmd_checksub(self, update, context):
+        """Muestra qué ve el bot para un usuario concreto. No expulsa a nadie."""
+        user = update.effective_user
+        if update.effective_chat.type != "private":
+            return await update.message.reply_text("⚠️ Usa este comando en privado conmigo.")
+
+        if user.id == self.cfg.bot_owner_id and len(context.args or []) >= 2:
+            b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", context.args[1].lower())
+        else:
+            b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+        if not b:
+            return await update.message.reply_text("❌ No autorizado o slug no encontrado.")
+        if not context.args:
+            return await update.message.reply_text("Usa: /checksub <usuario_de_twitch>")
+
+        login = context.args[0].lower().lstrip("@")
+        bid = b["broadcaster_id"]
+        out = [f"🔬 DIAGNÓSTICO: {login}", f"Canal en BD: {b['slug']} (broadcaster_id={bid})", ""]
+
+        token = await self.refresh_twitch_token(b)
+        headers = {"Authorization": f"Bearer {token}", "Client-Id": self.cfg.client_id}
+
+        def _get(url, **kw):
+            return requests.get(url, timeout=15, **kw)
+
+        # 1. ¿De quién es el token y qué permisos tiene?
+        r = await asyncio.to_thread(_get, "https://id.twitch.tv/oauth2/validate",
+                                    headers={"Authorization": f"OAuth {token}"})
+        if r.status_code == 200:
+            v = r.json()
+            ok = "✅" if str(v.get("user_id")) == str(bid) else "❌ NO COINCIDE CON EL CANAL"
+            out.append(f"1) Token del canal: {v.get('login')} (id={v.get('user_id')}) {ok}")
+            out.append(f"   Permisos: {', '.join(v.get('scopes', []))}")
+            out.append(f"   Caduca en: {v.get('expires_in')} s")
+        else:
+            out.append(f"1) ❌ Token inválido: HTTP {r.status_code} {r.text[:150]}")
+
+        # 2. ID real en Twitch de ese usuario
+        r = await asyncio.to_thread(_get, f"{self.cfg.TW_API}/users",
+                                    headers=headers, params={"login": login})
+        real_id = None
+        if r.status_code == 200 and r.json().get("data"):
+            real_id = str(r.json()["data"][0]["id"])
+            out.append(f"2) ID real en Twitch: {real_id}")
+        else:
+            out.append(f"2) ⚠️ No existe ese usuario en Twitch (HTTP {r.status_code})")
+
+        # 3. Qué tenemos guardado
+        rows = await self.db.all("""
+            SELECT 'group_members' AS tabla, telegram_id, twitch_id::text AS twitch_id, twitch_login
+            FROM group_members WHERE broadcaster_id=%s AND (LOWER(twitch_login)=%s OR twitch_id::text=%s)
+            UNION ALL
+            SELECT 'telegram_users', telegram_id, linked_twitch_id::text, twitch_login
+            FROM telegram_users WHERE streamer_id=%s AND (LOWER(twitch_login)=%s OR linked_twitch_id::text=%s)
+        """, bid, login, real_id or "-", bid, login, real_id or "-")
+        out.append(f"3) Guardado en BD ({len(rows)} filas):")
+        for row in rows:
+            match = "✅" if real_id and row["twitch_id"] == real_id else "❌ ID DISTINTO"
+            out.append(f"   {row['tabla']}: tg={row['telegram_id']} tw_id={row['twitch_id']} "
+                       f"login={row['twitch_login']} {match}")
+
+        # 4. Pregunta directa a Twitch
+        if real_id:
+            r = await asyncio.to_thread(_get, TW_SUBS_URL, headers=headers,
+                                        params={"broadcaster_id": bid, "user_id": real_id})
+            if r.status_code == 200:
+                data = r.json().get("data", [])
+                if data:
+                    d = data[0]
+                    out.append(f"4) Twitch dice: SUB ✅ tier={d.get('tier')} regalo={d.get('is_gift')} "
+                               f"de={d.get('gifter_login') or '-'}")
+                else:
+                    out.append("4) Twitch dice: NO SUB ❌")
+                out.append(f"   total del canal según API: {r.json().get('total')}")
+            else:
+                out.append(f"4) ❌ HTTP {r.status_code}: {r.text[:150]}")
+
+        await update.message.reply_text("\n".join(out))
+
+    # =================================================================
     #                    🔥 NUEVO: /verify
     # =================================================================
 
