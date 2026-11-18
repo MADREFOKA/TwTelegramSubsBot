@@ -299,7 +299,9 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("setfreegroup", self.cmds.cmd_setfreegroup))
         app.add_handler(CommandHandler("regendashlink", self.cmds.cmd_regendashlink))
         app.add_handler(CommandHandler("auditnow", self.auditor.cmd_auditnow))
-        app.add_handler(CommandHandler("limpieza", self.cmds.cmd_limpieza))
+        # /limpieza antes expulsaba según telegram_users.is_subscribed (dato guardado,
+        # desactualizado tras renovaciones). Ahora usa la auditoría segura contra Twitch.
+        app.add_handler(CommandHandler("limpieza", self.auditor.cmd_auditnow))
         app.add_handler(CommandHandler("priv_add", self.cmds.cmd_priv_add))
         app.add_handler(CommandHandler("priv_delete", self.cmds.cmd_priv_delete))
         app.add_handler(CommandHandler("priv_list", self.cmds.cmd_priv_list))
