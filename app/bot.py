@@ -360,14 +360,26 @@ class TwitchSubBot:
         await app.initialize()
         await app.start()
 
-        # Auditoría automática (0 = desactivada). La primera se lanza tras un intervalo completo.
-        interval_h = float(os.getenv("AUDIT_INTERVAL_HOURS", "12"))
-        if interval_h > 0 and app.job_queue:
-            async def _job(context):
+        # Auditoría automática MENSUAL (AUDIT_MONTH_DAY=0 la desactiva).
+        # El día elegido avisa a los "no sub"; 49 h después una segunda pasada
+        # expulsa a los que no se hayan re-verificado.
+        month_day = int(os.getenv("AUDIT_MONTH_DAY", "1"))
+        if month_day > 0 and app.job_queue:
+            from datetime import time as dtime
+            from app.auditor import GRACE_HOURS
+
+            async def _followup(context):
+                logging.info("⏰ Segunda pasada de la auditoría mensual")
                 await run_scheduled_audits(context.bot, self.db, self.cfg, self.refresh_twitch_token)
-            app.job_queue.run_repeating(_job, interval=interval_h * 3600, first=interval_h * 3600,
-                                        name="auditoria_programada")
-            logging.info(f"⏰ Auditoría automática cada {interval_h:g} h")
+
+            async def _monthly(context):
+                await run_scheduled_audits(context.bot, self.db, self.cfg, self.refresh_twitch_token)
+                context.job_queue.run_once(_followup, when=(GRACE_HOURS + 1) * 3600,
+                                           name="auditoria_seguimiento")
+
+            app.job_queue.run_monthly(_monthly, when=dtime(11, 0), day=min(month_day, 28),
+                                      name="auditoria_mensual")
+            logging.info(f"⏰ Auditoría automática el día {min(month_day, 28)} de cada mes (11:00 UTC)")
         logging.info("💜 Bot de Telegram iniciado correctamente")
         logging.info(f"📡 Escuchando webhooks en: {webhook_url}")
         
