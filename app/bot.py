@@ -15,7 +15,7 @@ from app.db import Database
 from app.security import TokenCipher
 from app.commands import Commands
 from app.oauth import OAuthHandlers
-from app.auditor import Auditor
+from app.auditor import Auditor, ensure_audit_tables, run_scheduled_audits
 from app.dashboard import Dashboard
 
 
@@ -288,6 +288,7 @@ class TwitchSubBot:
         # ════════════════════════════════════════════════════════════
         await self.db.init()
         logging.info("✅ Base de datos inicializada")
+        await ensure_audit_tables(self.db)
         
         app = ApplicationBuilder().token(self.cfg.token).build()
         self.app = app
@@ -358,6 +359,15 @@ class TwitchSubBot:
 
         await app.initialize()
         await app.start()
+
+        # Auditoría automática (0 = desactivada). La primera se lanza tras un intervalo completo.
+        interval_h = float(os.getenv("AUDIT_INTERVAL_HOURS", "12"))
+        if interval_h > 0 and app.job_queue:
+            async def _job(context):
+                await run_scheduled_audits(context.bot, self.db, self.cfg, self.refresh_twitch_token)
+            app.job_queue.run_repeating(_job, interval=interval_h * 3600, first=interval_h * 3600,
+                                        name="auditoria_programada")
+            logging.info(f"⏰ Auditoría automática cada {interval_h:g} h")
         logging.info("💜 Bot de Telegram iniciado correctamente")
         logging.info(f"📡 Escuchando webhooks en: {webhook_url}")
         

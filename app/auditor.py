@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from app.db import Database
+from app.security import TokenCipher
 
 # =====================================================================
 #                    CONFIGURACIÓN DE SEGURIDAD
@@ -124,6 +125,157 @@ async def _kick(bot, group_id, tg_id):
     logging.error(f"❌ {tg_id} se ha quedado BANEADO (unban falló 3 veces)")
 
 
+
+# =====================================================================
+#          COMPROBACIÓN CON EL TOKEN DEL PROPIO USUARIO
+# =====================================================================
+# Twitch a veces dice "no sub" desde el lado del canal (/subscriptions)
+# pero "sí sub" desde el lado del usuario (/subscriptions/user). Guardamos
+# el token de cada usuario al vincularse y lo usamos antes de expulsar.
+
+_cipher = TokenCipher()
+USER_SUB_URL = "https://api.twitch.tv/helix/subscriptions/user"
+TW_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
+
+
+async def ensure_audit_tables(db):
+    await db.exec("""
+        CREATE TABLE IF NOT EXISTS audit_strikes (
+            group_id    BIGINT NOT NULL,
+            telegram_id BIGINT NOT NULL,
+            first_seen  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (group_id, telegram_id)
+        )
+    """)
+    await db.exec("""
+        CREATE TABLE IF NOT EXISTS user_tokens (
+            twitch_id     TEXT PRIMARY KEY,
+            telegram_id   BIGINT,
+            access_token  TEXT,
+            refresh_token TEXT,
+            obtained_at   BIGINT,
+            expires_in    INTEGER
+        )
+    """)
+
+
+async def save_user_token(db, twitch_id, telegram_id, access_token, refresh_token, expires_in):
+    import time as _t
+    await db.exec("""
+        INSERT INTO user_tokens (twitch_id, telegram_id, access_token, refresh_token, obtained_at, expires_in)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (twitch_id) DO UPDATE SET
+            telegram_id=EXCLUDED.telegram_id, access_token=EXCLUDED.access_token,
+            refresh_token=EXCLUDED.refresh_token, obtained_at=EXCLUDED.obtained_at,
+            expires_in=EXCLUDED.expires_in
+    """, str(twitch_id), telegram_id, _cipher.encrypt(access_token),
+       _cipher.encrypt(refresh_token), int(_t.time()), int(expires_in or 0))
+
+
+def _user_sub_blocking(cfg, twitch_id, broadcaster_id, access, refresh, obtained, expires):
+    """Devuelve (True/False/None, nuevos_tokens|None). None = no se pudo saber."""
+    import time as _t
+    new_tokens = None
+
+    def do_refresh():
+        r = requests.post(TW_TOKEN_URL, data={
+            "grant_type": "refresh_token", "refresh_token": refresh,
+            "client_id": cfg.client_id, "client_secret": cfg.client_secret}, timeout=15)
+        if r.status_code != 200 or "access_token" not in r.json():
+            return None
+        d = r.json()
+        return d["access_token"], d.get("refresh_token", refresh), int(_t.time()), int(d.get("expires_in", 0))
+
+    if refresh and _t.time() - (obtained or 0) > max(0, (expires or 0) - 60):
+        new_tokens = do_refresh()
+        if not new_tokens:
+            return None, None          # token revocado: no sabemos
+        access = new_tokens[0]
+
+    for attempt in range(2):
+        r = requests.get(USER_SUB_URL, timeout=15,
+                         headers={"Authorization": f"Bearer {access}", "Client-Id": cfg.client_id},
+                         params={"broadcaster_id": broadcaster_id, "user_id": twitch_id})
+        if r.status_code == 200:
+            return bool(r.json().get("data")), new_tokens
+        if r.status_code == 404:
+            return False, new_tokens
+        if r.status_code == 401 and attempt == 0 and refresh:
+            new_tokens = do_refresh()
+            if not new_tokens:
+                return None, None
+            access = new_tokens[0]
+            continue
+        return None, new_tokens
+    return None, new_tokens
+
+
+async def check_with_user_tokens(db, cfg, broadcaster_id, twitch_ids):
+    """
+    Devuelve (sub_confirmados, no_sub_confirmados, sin_token) como sets de twitch_id (str).
+    """
+    ids = [str(t) for t in twitch_ids]
+    if not ids:
+        return set(), set(), set()
+    rows = await db.all(
+        "SELECT * FROM user_tokens WHERE twitch_id = ANY(%s)", ids)
+    by_id = {r["twitch_id"]: r for r in rows}
+    sin_token = set(ids) - set(by_id)
+
+    sem = asyncio.Semaphore(8)
+    subs, no_subs = set(), set()
+
+    async def one(tid):
+        r = by_id[tid]
+        async with sem:
+            try:
+                res, new = await asyncio.to_thread(
+                    _user_sub_blocking, cfg, tid, broadcaster_id,
+                    _cipher.decrypt(r["access_token"]), _cipher.decrypt(r["refresh_token"]),
+                    r["obtained_at"], r["expires_in"])
+            except Exception as e:
+                logging.warning(f"⚠️ Error comprobando token de usuario {tid}: {e}")
+                return
+        if new:
+            await db.exec("""UPDATE user_tokens SET access_token=%s, refresh_token=%s,
+                             obtained_at=%s, expires_in=%s WHERE twitch_id=%s""",
+                          _cipher.encrypt(new[0]), _cipher.encrypt(new[1]), new[2], new[3], tid)
+        if res is True:
+            subs.add(tid)
+        elif res is False:
+            no_subs.add(tid)
+        else:
+            sin_token.add(tid)   # token inválido → tratar como si no tuviera
+
+    await asyncio.gather(*(one(t) for t in by_id))
+    return subs, no_subs, sin_token
+
+
+async def _send_warning(bot, cfg, slug, display_name, tg_id):
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "💜 Verificar mi sub de nuevo", url=f"https://t.me/{cfg.bot_username}?start={slug}")]])
+    text = (
+        f"⚠️ Hola! En la comprobación del grupo premium de {display_name} tu suscripción "
+        f"no aparece activa en Twitch.\n\n"
+        f"Si SIGUES siendo sub, pulsa el botón y vuelve a vincular tu cuenta de Twitch "
+        f"(la misma con la que estás suscrito). Con eso te quedas en el grupo.\n\n"
+        f"Si no haces nada, saldrás del grupo en {GRACE_HOURS:g} horas. "
+        f"Podrás volver cuando quieras volviendo a suscribirte y verificándote."
+    )
+    try:
+        await bot.send_message(tg_id, text, reply_markup=kb)
+        return True
+    except Exception as e:
+        logging.info(f"ℹ️ No se pudo avisar a {tg_id}: {e}")
+        return False
+
+
+async def run_scheduled_audits(bot, db, cfg, refresh_twitch_token):
+    rows = await db.all("SELECT slug FROM broadcasters WHERE group_id IS NOT NULL")
+    for r in rows:
+        logging.info(f"⏰ Auditoría programada: {r['slug']}")
+        await run_full_audit(bot, db, cfg, r["slug"], refresh_twitch_token)
+
 # =====================================================================
 #                           AUDITORÍA COMPLETA
 # =====================================================================
@@ -172,14 +324,7 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
         broadcaster_id = b["broadcaster_id"]
         logging.info(f"🔎 Iniciando auditoría para {slug} (group_id={group_id})")
 
-        await db.exec("""
-            CREATE TABLE IF NOT EXISTS audit_strikes (
-                group_id    BIGINT NOT NULL,
-                telegram_id BIGINT NOT NULL,
-                first_seen  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (group_id, telegram_id)
-            )
-        """)
+        await ensure_audit_tables(db)
 
         # twitch_id: group_members y, si falta, el vinculado en telegram_users
         members = await db.all("""
@@ -238,7 +383,7 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
             elif str(m["twitch_id"]) not in subs_set:
                 candidates.append(m)
 
-        # ─── 3. Doble verificación individual ───
+        # ─── 3. Doble verificación individual (lado del canal) ───
         if candidates:
             confirmed, err = await _twitch_call(
                 _confirm_subs_blocking, b, cfg, refresh_twitch_token,
@@ -246,39 +391,46 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
             if err:
                 return await abort(f"Twitch {err[0]} en la verificación individual")
             if confirmed:
-                logging.warning(
-                    f"⚠️ {len(confirmed)} usuarios NO estaban en la lista paginada pero SÍ son subs "
-                    f"(se habrían expulsado por error)")
+                logging.warning(f"⚠️ {len(confirmed)} no estaban en la lista pero SÍ son subs")
             candidates = [m for m in candidates if str(m["twitch_id"]) not in confirmed]
 
-        no_subs_ids = {int(m["telegram_id"]) for m in candidates}
+        # ─── 4. Tercera verificación con el token del propio usuario ───
+        if candidates:
+            user_subs, _no, _sin = await check_with_user_tokens(
+                db, cfg, broadcaster_id, [m["twitch_id"] for m in candidates])
+            if user_subs:
+                logging.warning(
+                    f"⚠️ {len(user_subs)} salen NO sub desde el canal pero SÍ desde su cuenta → se quedan")
+            candidates = [m for m in candidates if str(m["twitch_id"]) not in user_subs]
 
-        # ─── 4. Freno de emergencia ───
-        if normales and len(candidates) / normales > MAX_KICK_RATIO:
-            return await abort(
-                f"se iba a expulsar a {len(candidates)}/{normales} miembros "
-                f"(> {int(MAX_KICK_RATIO * 100)}%). Revisa con /verify")
+        no_subs_ids = {int(m["telegram_id"]) for m in candidates}
 
         # ─── 5. Actualizar estado de los que SÍ son sub ───
         for m in members:
             tg_id = int(m["telegram_id"])
             if not m.get("twitch_id") or tg_id in no_subs_ids:
                 continue
-            await db.exec("UPDATE group_members SET is_subscribed=TRUE, twitch_id=%s "
-                          "WHERE telegram_id=%s AND group_id=%s", str(m["twitch_id"]), tg_id, group_id)
-            await db.exec("UPDATE telegram_users SET is_subscribed=TRUE "
-                          "WHERE telegram_id=%s AND streamer_id=%s", tg_id, broadcaster_id)
             if m.get("not_sub_since"):
                 await db.exec("DELETE FROM audit_strikes WHERE group_id=%s AND telegram_id=%s",
                               group_id, tg_id)
+        await db.exec("""
+            UPDATE group_members SET is_subscribed = NOT (telegram_id = ANY(%s))
+            WHERE group_id=%s AND twitch_id IS NOT NULL
+        """, list(no_subs_ids), group_id)
+        sub_tg_ids = [int(m["telegram_id"]) for m in members
+                      if m.get("twitch_id") and int(m["telegram_id"]) not in no_subs_ids]
+        await db.exec("""
+            UPDATE telegram_users SET is_subscribed=TRUE
+            WHERE streamer_id=%s AND telegram_id = ANY(%s)
+        """, broadcaster_id, sub_tg_ids)
 
-        # Los sin twitch_id NO se expulsan automáticamente: se registran para revisión
         for m in sin_twitch:
             await log_detail(m, "aviso", "sin twitch_id vinculado (no se expulsa; que haga /start)")
 
-        # ─── 6. Expulsar sólo a los que superan el periodo de gracia ───
+        # ─── 6. Aviso privado (empieza la gracia) / lista de expulsión ───
         now = datetime.now(timezone.utc)
-        en_gracia = 0
+        en_gracia = avisados = 0
+        to_kick = []
         for m in candidates:
             tg_id = int(m["telegram_id"])
             since = m.get("not_sub_since")
@@ -287,13 +439,28 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
                     INSERT INTO audit_strikes (group_id, telegram_id) VALUES (%s,%s)
                     ON CONFLICT DO NOTHING
                 """, group_id, tg_id)
-                since = now
+                en_gracia += 1
+                if await _send_warning(bot, cfg, slug, b["display_name"], tg_id):
+                    avisados += 1
+                await log_detail(m, "aviso", f"no sub: avisado, {GRACE_HOURS:g}h para re-verificar",
+                                 m["twitch_id"])
+                await asyncio.sleep(0.05)   # límite de mensajes de Telegram
+                continue
             if now - since < timedelta(hours=GRACE_HOURS):
                 en_gracia += 1
-                await log_detail(m, "aviso", f"no sub desde {since:%d/%m %H:%M} UTC (en gracia)",
-                                 m["twitch_id"])
                 continue
+            to_kick.append(m)
 
+        # ─── 7. Freno de emergencia (solo afecta a expulsiones) ───
+        if normales and len(to_kick) / normales > MAX_KICK_RATIO:
+            return await abort(
+                f"se iba a expulsar a {len(to_kick)}/{normales} miembros "
+                f"(> {int(MAX_KICK_RATIO * 100)}%). Avisos enviados: {avisados}. "
+                f"Si es correcto, sube AUDIT_MAX_KICK_RATIO temporalmente")
+
+        # ─── 8. Expulsar ───
+        for m in to_kick:
+            tg_id = int(m["telegram_id"])
             try:
                 await _kick(bot, group_id, tg_id)
             except Exception as e:
@@ -302,7 +469,7 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
                 await log_detail(m, "fallo", f"Error al expulsar: {e}", m["twitch_id"])
                 continue
 
-            await log_detail(m, "expulsado", "ya no es sub (confirmado 2 veces + gracia)",
+            await log_detail(m, "expulsado", "no sub (3 comprobaciones + aviso + gracia)",
                              m["twitch_id"])
             await db.exec("UPDATE telegram_users SET is_subscribed=FALSE "
                           "WHERE telegram_id=%s AND streamer_id=%s", tg_id, broadcaster_id)
@@ -312,14 +479,13 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
                           group_id, tg_id)
             expulsados += 1
             logging.info(f"🚫 Expulsado (no sub): {m.get('username') or tg_id}")
-
             await asyncio.sleep(0.2)
             if expulsados % 50 == 0:
                 await asyncio.sleep(15)
 
         logging.info(
             f"📊 Auditoría {slug}: {total} miembros, {expulsados} expulsados, "
-            f"{en_gracia} en gracia, {len(sin_twitch)} sin twitch_id, {fallos} fallos")
+            f"{en_gracia} en gracia ({avisados} avisados hoy), {len(sin_twitch)} sin twitch_id, {fallos} fallos")
 
     except Exception as e:
         fallos += 1
@@ -738,6 +904,22 @@ class Auditor:
                         still_bad.append(u)
                 results["not_subs"] = still_bad
 
+        # Tercera comprobación: token del propio usuario
+        por_token_usuario = 0
+        sin_token_guardado = 0
+        if results["not_subs"]:
+            user_subs, _no, sin_tok = await check_with_user_tokens(
+                self.db, self.cfg, broadcaster_id, [u["twitch_id"] for u in results["not_subs"]])
+            still_bad = []
+            for u in results["not_subs"]:
+                if str(u["twitch_id"]) in user_subs:
+                    results["subs_ok"].append(u)
+                    por_token_usuario += 1
+                else:
+                    still_bad.append(u)
+            results["not_subs"] = still_bad
+            sin_token_guardado = len({str(u["twitch_id"]) for u in still_bad} & sin_tok)
+
         # Generar reporte
         total_ok = len(results["subs_ok"])
         total_bad = len(results["not_subs"])
@@ -754,6 +936,12 @@ class Auditor:
         if falsos_negativos:
             report += (f"🔁 `{falsos_negativos}` faltaban en la lista pero SON subs "
                        f"(antes se habrían expulsado)\n")
+        if por_token_usuario:
+            report += (f"🔁 `{por_token_usuario}` salen NO sub desde el canal pero SÍ desde su cuenta "
+                       f"(se quedan)\n")
+        if sin_token_guardado:
+            report += (f"✉️ `{sin_token_guardado}` de los NO subs no tienen token guardado: "
+                       f"recibirán aviso para re-verificarse\n")
         if confirm_err:
             report += f"⚠️ No se pudo hacer la verificación individual (Twitch {confirm_err[0]})\n"
         report += "\n"
@@ -765,7 +953,7 @@ class Auditor:
         report += f"👻 En BD pero no en grupo: `{total_ghosts}`\n\n{'─'*40}\n\n"
 
         if results["not_subs"]:
-            report += f"🚫 **NO SON SUBS** ({total_bad}):\n_(Serían expulsados)_\n\n"
+            report += f"🚫 **NO SON SUBS** ({total_bad}):\n_(Recibirían aviso; fuera a las {GRACE_HOURS:g}h si no se re-verifican)_\n\n"
             for u in results["not_subs"][:20]:
                 report += f"• @{u['username']} → TW: `{u['twitch_login']}`\n"
             if total_bad > 20:
@@ -784,9 +972,9 @@ class Auditor:
         normales = total_ok + total_bad + total_no_id
         if normales and total_bad / normales > MAX_KICK_RATIO:
             report += (f"⛔ **{total_bad}/{normales}** no son subs (> {int(MAX_KICK_RATIO*100)}%): "
-                       f"la auditoría se CANCELARÍA por seguridad.\n\n")
+                       f"se enviarían los avisos, pero las expulsiones se frenarían por seguridad.\n\n")
         elif total_bad > 0:
-            report += (f"⚠️ **{total_bad}** usuarios serían expulsados tras {GRACE_HOURS:g}h de gracia.\n"
+            report += (f"⚠️ **{total_bad}** usuarios recibirían aviso y saldrían tras {GRACE_HOURS:g}h si no se re-verifican.\n"
                        f"• Usa `/auditnow` cuando estés listo.\n\n")
         if total_no_id > 0:
             report += f"ℹ️ **{total_no_id}** sin twitch_id: NO se expulsan, deben hacer /start.\n\n"
