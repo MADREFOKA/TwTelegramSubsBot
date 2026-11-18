@@ -5,7 +5,7 @@ import requests
 
 from aiohttp import web
 
-from app.auditor import fetch_all_subs
+from app.auditor import fetch_all_subs, save_user_token
 from app.utils.messages import (
     setup_success,
     viewer_is_owner,
@@ -194,6 +194,8 @@ class OAuthHandlers:
                 return web.Response(text=f"Error al obtener token: {data}", status=400)
 
             access_token = data["access_token"]
+            user_refresh_token = data.get("refresh_token")
+            user_expires_in = data.get("expires_in", 0)
             headers_user = {
                 "Authorization": f"Bearer {access_token}",
                 "Client-Id": self.cfg.client_id
@@ -223,6 +225,23 @@ class OAuthHandlers:
             )
 
             logging.info(f"🔍 Usuario {me['login']} → Sub={is_sub} de {b['display_name']}")
+
+            # Guardar el token del usuario: la auditoría lo usa para confirmar su sub
+            # antes de expulsar (Twitch a veces dice "no sub" desde el lado del canal)
+            try:
+                await save_user_token(self.db, me["id"], row["telegram_id"],
+                                      access_token, user_refresh_token, user_expires_in)
+            except Exception as e:
+                logging.error(f"❌ No se pudo guardar el token de usuario: {e}")
+
+            # Si se re-verifica como sub, se cancela cualquier aviso de expulsión pendiente
+            if is_sub and b.get("group_id"):
+                try:
+                    await self.db.exec(
+                        "DELETE FROM audit_strikes WHERE group_id=%s AND telegram_id=%s",
+                        b["group_id"], row["telegram_id"])
+                except Exception as e:
+                    logging.warning(f"⚠️ No se pudo limpiar audit_strikes: {e}")
 
             # 🔥 MEJORADO: Actualizar telegram_users CON validación
             await self._update_telegram_user(
