@@ -737,6 +737,21 @@ class Auditor:
             else:
                 out.append(f"4) ❌ HTTP {r.status_code}: {r.text[:150]}")
 
+        # 5. Pregunta desde la cuenta del usuario (token guardado al vincularse)
+        if real_id:
+            has_tok = await self.db.one("SELECT 1 FROM user_tokens WHERE twitch_id=%s", real_id)
+            if not has_tok:
+                out.append("5) Desde su cuenta: sin token guardado. Tiene que volver a vincularse "
+                           f"(/start {b['slug']}) con la versión nueva del bot")
+            else:
+                subs, no_subs, _sin = await check_with_user_tokens(self.db, self.cfg, bid, [real_id])
+                if real_id in subs:
+                    out.append("5) Desde su cuenta: SUB ✅ → la auditoría NO le expulsa")
+                elif real_id in no_subs:
+                    out.append("5) Desde su cuenta: NO SUB ❌ (los dos lados coinciden)")
+                else:
+                    out.append("5) Desde su cuenta: ⚠️ token caducado o revocado, tiene que re-vincularse")
+
         await update.message.reply_text("\n".join(out))
 
     # =================================================================
