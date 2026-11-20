@@ -312,6 +312,7 @@ class TwitchSubBot:
         app.add_handler(CommandHandler("auditcheck", self.auditor.cmd_auditcheck))
         app.add_handler(CommandHandler("verify", self.auditor.cmd_verify))
         app.add_handler(CommandHandler("checksub", self.auditor.cmd_checksub))
+        app.add_handler(CommandHandler("testaviso", self.auditor.cmd_testaviso))
         app.add_handler(ChatMemberHandler(self.on_member_update, ChatMemberHandler.CHAT_MEMBER))
 
         # ════════════════════════════════════════════════════════════
