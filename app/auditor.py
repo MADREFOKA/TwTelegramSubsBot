@@ -284,9 +284,32 @@ async def run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token
     lock = _audit_locks.setdefault(slug, asyncio.Lock())
     if lock.locked():
         logging.warning(f"⏭️ Ya hay una auditoría en curso para {slug}, se ignora esta.")
-        return
+        return {"ocupada": True}
     async with lock:
-        await _run_full_audit(bot, db, cfg, slug, refresh_twitch_token)
+        return await _run_full_audit(bot, db, cfg, slug, refresh_twitch_token)
+
+
+def format_audit_summary(slug, res):
+    """Texto para el admin con lo que ha pasado de verdad en la auditoría."""
+    if not res:
+        return f"❌ La auditoría de {slug} no devolvió resultado. Mira los logs."
+    if res.get("ocupada"):
+        return f"⏭️ Ya había una auditoría en marcha para {slug}. Espera a que termine."
+    lines = [f"📋 Auditoría de {slug}"]
+    if res.get("error"):
+        lines.append(f"❌ ERROR: {res['error']}")
+    if res.get("abortada"):
+        lines.append(f"⛔ Cancelada antes de expulsar: {res['abortada']}")
+    lines += [
+        f"👥 Miembros revisados: {res.get('total', 0)}",
+        f"✉️ Avisos enviados ahora: {res.get('avisados', 0)}",
+        f"📵 Avisos que NO llegaron (bot bloqueado, etc.): {res.get('avisos_fallidos', 0)}",
+        f"⏳ En plazo de {GRACE_HOURS:g}h (avisados antes): {res.get('en_espera', 0)}",
+        f"🚫 Expulsados: {res.get('expulsados', 0)}",
+    ]
+    if res.get("fallos_expulsion"):
+        lines.append(f"⚠️ Fallos al expulsar: {res['fallos_expulsion']}")
+    return "\n".join(lines)
 
 
 async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_token):
@@ -299,6 +322,8 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
     """
     audit_id = None
     total = expulsados = fallos = 0
+    res = {"total": 0, "avisados": 0, "avisos_fallidos": 0, "en_espera": 0,
+           "expulsados": 0, "fallos_expulsion": 0}
 
     async def log_detail(m, accion, motivo, twitch_id=None):
         await db.exec("""
@@ -312,13 +337,16 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
         nonlocal fallos
         fallos += 1
         logging.error(f"⛔ AUDITORÍA ABORTADA ({slug}): {motivo}")
+        res["abortada"] = motivo
         await log_detail(None, "fallo", f"Auditoría cancelada: {motivo}")
+        return res
 
     try:
         b = await db.one("SELECT * FROM broadcasters WHERE slug=%s", slug)
         if not b or not b.get("group_id"):
             logging.warning(f"⚠️ Saltando auditoría: {slug} sin grupo vinculado.")
-            return
+            res["error"] = "el canal no tiene grupo vinculado"
+            return res
 
         group_id = b["group_id"]
         broadcaster_id = b["broadcaster_id"]
@@ -442,14 +470,19 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
                 en_gracia += 1
                 if await _send_warning(bot, cfg, slug, b["display_name"], tg_id):
                     avisados += 1
-                await log_detail(m, "aviso", f"no sub: avisado, {GRACE_HOURS:g}h para re-verificar",
-                                 m["twitch_id"])
+                    motivo = f"no sub: aviso ENVIADO, {GRACE_HOURS:g}h para re-verificar"
+                else:
+                    res["avisos_fallidos"] += 1
+                    motivo = f"no sub: aviso NO entregado (bot bloqueado?), {GRACE_HOURS:g}h"
+                await log_detail(m, "aviso", motivo, m["twitch_id"])
                 await asyncio.sleep(0.05)   # límite de mensajes de Telegram
                 continue
             if now - since < timedelta(hours=GRACE_HOURS):
                 en_gracia += 1
+                res["en_espera"] += 1
                 continue
             to_kick.append(m)
+        res["avisados"] = avisados
 
         # ─── 7. Freno de emergencia (solo afecta a expulsiones) ───
         if normales and len(to_kick) / normales > MAX_KICK_RATIO:
@@ -465,6 +498,7 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
                 await _kick(bot, group_id, tg_id)
             except Exception as e:
                 fallos += 1
+                res["fallos_expulsion"] += 1
                 logging.error(f"❌ Error expulsando {tg_id}: {e}")
                 await log_detail(m, "fallo", f"Error al expulsar: {e}", m["twitch_id"])
                 continue
@@ -489,15 +523,20 @@ async def _run_full_audit(bot, db: Database, cfg, slug: str, refresh_twitch_toke
 
     except Exception as e:
         fallos += 1
+        res["error"] = str(e)[:300]
         logging.exception(f"❌ Error en run_full_audit({slug}): {e}")
 
     finally:
+        res["total"] = total
+        res["expulsados"] = expulsados
         if audit_id is not None:
             await db.exec("""
                 UPDATE audit_logs
                 SET total_miembros=%s, expulsados=%s, fallos=%s, fecha_auditoria=NOW()
                 WHERE id=%s
             """, total, expulsados, fallos, audit_id)
+
+    return res
 
 
 # =====================================================================
@@ -555,8 +594,8 @@ class Auditor:
         
         async def _do_audit():
             try:
-                await run_full_audit(bot, self.db, self.cfg, slug, self.refresh_twitch_token)
-                await bot.send_message(chat_id, "✅ Auditoría completada.", reply_markup=keyboard)
+                res = await run_full_audit(bot, self.db, self.cfg, slug, self.refresh_twitch_token)
+                await bot.send_message(chat_id, format_audit_summary(slug, res), reply_markup=keyboard)
             except Exception as e:
                 logging.exception(f"❌ Error en auditoría background ({slug}): {e}")
                 await bot.send_message(chat_id, "❌ Error ejecutando la auditoría. Mira logs / dashboard.")
@@ -655,6 +694,25 @@ class Auditor:
         text += f"\nResumen: 🟢 {ok} | 🔴 {no} | ⚠️ {sin}\n"
         text += f"\nTotal en group_members: {len(members)}\n"
         return text
+
+    # =================================================================
+    #                    /testaviso  (te manda el aviso a ti)
+    # =================================================================
+
+    async def cmd_testaviso(self, update, context):
+        user = update.effective_user
+        if update.effective_chat.type != "private":
+            return await update.message.reply_text("⚠️ Usa este comando en privado conmigo.")
+        if user.id == self.cfg.bot_owner_id and context.args:
+            b = await self.db.one("SELECT * FROM broadcasters WHERE slug=%s", context.args[0].lower())
+        else:
+            b = await self.db.one("SELECT * FROM broadcasters WHERE owner_telegram_id=%s", user.id)
+        if not b:
+            return await update.message.reply_text("❌ No autorizado o slug no encontrado. Usa: /testaviso <slug>")
+        await update.message.reply_text("👇 Así le llega el aviso a quien sale como NO sub (esto es solo una prueba):")
+        ok = await _send_warning(context.bot, self.cfg, b["slug"], b["display_name"], user.id)
+        if not ok:
+            await update.message.reply_text("❌ No se pudo enviar el aviso. Mira los logs del hosting.")
 
     # =================================================================
     #                    /checksub <twitch_login>  (diagnóstico)
